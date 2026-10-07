@@ -1,3 +1,6 @@
+import { day, localDate } from "./dates";
+export { day, localDate } from "./dates";
+import { weeklyReview, dueTasks } from "./personal";
 export type Task = {
   id: string;
   name: string;
@@ -6,13 +9,14 @@ export type Task = {
   due: string;
   completed: boolean;
   recurring: boolean;
+  completedOn?: string;
 };
 export type Course = {
   id: string;
   name: string;
   code: string;
   instructor: string;
-  grade: number;
+  grade: number | null;
   notes: string;
 };
 export type Assignment = {
@@ -22,6 +26,9 @@ export type Assignment = {
   due: string;
   type: "Assignment" | "Exam";
   completed: boolean;
+  completedOn?: string;
+  grade?: number | null;
+  notes?: string;
 };
 export type Weight = { date: string; value: number };
 export type Workout = {
@@ -39,8 +46,9 @@ export type State = {
   assignments: Assignment[];
   weights: Weight[];
   workouts: Workout[];
-  goalWeight: number;
-  habits: { name: string; dates: string[] }[];
+  schemaVersion?: number;
+  goalWeight: number | null;
+  habits: { name: string; dates: string[]; createdOn?: string }[];
   nutrition: {
     date: string;
     calories: number;
@@ -49,14 +57,6 @@ export type State = {
   }[];
   dates: { name: string; date: string }[];
 };
-export function day(offset = 0) {
-  const d = new Date();
-  d.setDate(d.getDate() + offset);
-  return localDate(d);
-}
-export function localDate(d: Date) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
 export const uid = () => crypto.randomUUID();
 export function sampleData(): State {
   return {
@@ -189,18 +189,30 @@ export function sampleData(): State {
     ],
   };
 }
-export function toggleTask(state: State, id: string): State {
+export function toggleTask(state: State, id: string, today = day()): State {
   const task = state.tasks.find((t) => t.id === id);
   if (!task) return state;
   const tasks = state.tasks.map((t) =>
-    t.id === id ? { ...t, completed: !t.completed } : t,
+    t.id === id
+      ? {
+          ...t,
+          completed: !t.completed,
+          completedOn: t.completed ? undefined : today,
+        }
+      : t,
   );
   if (!task.completed && task.recurring) {
-    const next = new Date(task.due + "T12:00:00");
+    const next = new Date((task.due > today ? task.due : today) + "T12:00:00");
     next.setDate(next.getDate() + 1);
     const due = localDate(next);
     if (!tasks.some((t) => t.name === task.name && t.due === due))
-      tasks.push({ ...task, id: uid(), due, completed: false });
+      tasks.push({
+        ...task,
+        id: uid(),
+        due,
+        completed: false,
+        completedOn: undefined,
+      });
   }
   return { ...state, tasks };
 }
@@ -227,9 +239,9 @@ export interface AssistantProvider {
 export const localAssistant: AssistantProvider = {
   async reply(question, state) {
     const q = question.toLowerCase();
-    const tasks = state.tasks.filter((t) => !t.completed && t.due <= day());
+    const tasks = dueTasks(state);
     const assignments = state.assignments
-      .filter((a) => !a.completed && a.due >= day())
+      .filter((a) => !a.completed)
       .sort((a, b) => a.due.localeCompare(b.due));
     if (q.includes("bench")) {
       const entries = state.workouts
@@ -253,7 +265,10 @@ export const localAssistant: AssistantProvider = {
       return assignments.length
         ? assignments
             .slice(0, 5)
-            .map((a) => `${a.name} — due ${a.due}`)
+            .map(
+              (a) =>
+                `${a.name} — ${a.due < day() ? "overdue since" : "due"} ${a.due}`,
+            )
             .join("\n")
         : "No upcoming assignments. You’re caught up!";
     if (q.includes("tomorrow") || q.includes("schedule"))
@@ -268,12 +283,14 @@ export const localAssistant: AssistantProvider = {
         .join(
           "\n",
         )}\n• Leave time for movement and a short evening review. This is a suggestion; no calendar events were created.`;
-    if (q.includes("review"))
-      return `Weekly snapshot:\n• ${state.tasks.filter((t) => t.completed && t.due >= day(-6) && t.due <= day()).length} tasks completed\n• ${sessionCount(state.workouts.filter((w) => w.date >= day(-6) && w.date <= day()))} workouts logged\n• ${averageWeight(state.weights).toFixed(1)} lb average weight\n• ${assignments.filter((a) => a.due <= day(7)).length} upcoming college deadlines`;
+    if (q.includes("review")) {
+      const review = weeklyReview(state);
+      return `Last 7 days (${review.start} to ${review.end}):\n• ${review.tasksCompleted} tasks completed\n• ${review.assignmentsCompleted} assignments/exams completed\n• ${review.sessions} workouts\n• ${review.workload.length} school deadlines pending (including overdue)\n• ${review.stepAverage === null ? "No steps logged" : Math.round(review.stepAverage) + " steps per logged day"}\n• ${review.habitCompleted}/${review.habitPossible} habit check-ins${review.legacyCompletions ? "\nEarlier completed records without a completion date are excluded." : ""}`;
+    }
     if (q.includes("priorit") || q.includes("today"))
       return `Start with ${
         tasks
-          .filter((t) => t.priority === "High")
+          .slice(0, 3)
           .map((t) => t.name)
           .join(" and ") || "your most important unfinished task"
       }. ${assignments[0] ? `Your next college deadline is ${assignments[0].name} on ${assignments[0].due}.` : ""}\nKeep your plan realistic and leave a little breathing room.`;

@@ -29,7 +29,6 @@ import {
   TrendingUp,
 } from "lucide-react";
 import {
-  sampleData,
   day,
   uid,
   toggleTask,
@@ -40,11 +39,24 @@ import {
   type Task,
   type Assignment,
 } from "./data";
+import {
+  emptyWorkspace,
+  restoreWorkspace,
+  STORAGE_KEY,
+  urgency,
+  dueTasks,
+  schoolWorkload,
+  toggleAssignment,
+  toggleHabit,
+  removeCourse,
+} from "./personal";
+import WeeklyReview from "./WeeklyReview";
 const WeightChart = lazy(() => import("./Charts"));
 const BenchChart = lazy(() =>
   import("./Charts").then((module) => ({ default: module.BenchChart })),
 );
-type Page = "Today" | "College" | "Fitness" | "Tasks" | "AI Assistant";
+type Page =
+  "Today" | "College" | "Fitness" | "Tasks" | "AI Assistant" | "Weekly Review";
 const navigation = [
   { name: "Today" as Page, icon: Sun },
   { name: "College" as Page, icon: GraduationCap },
@@ -57,25 +69,31 @@ const formatDate = (date: string) =>
     month: "short",
     day: "numeric",
   });
-function load(): State {
+function load() {
   try {
-    const raw = localStorage.getItem("dylan-os-v1");
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (
-        Array.isArray(parsed.tasks) &&
-        Array.isArray(parsed.courses) &&
-        Array.isArray(parsed.weights) &&
-        Array.isArray(parsed.assignments) &&
-        Array.isArray(parsed.workouts) &&
-        Array.isArray(parsed.habits) &&
-        Array.isArray(parsed.nutrition) &&
-        Array.isArray(parsed.dates)
-      )
-        return parsed;
-    }
-  } catch {}
-  return sampleData();
+    return {
+      data: restoreWorkspace(localStorage.getItem(STORAGE_KEY)),
+      error: "",
+    };
+  } catch {
+    return {
+      data: emptyWorkspace(),
+      error:
+        "Saved workspace could not be read. Your stored data has been preserved; changes are blocked until it can be restored.",
+    };
+  }
+}
+function Urgency({
+  due,
+  completed = false,
+}: {
+  due: string;
+  completed?: boolean;
+}) {
+  const status = urgency(due, completed);
+  return status ? (
+    <span className={`urgency ${status.level}`}>{status.label}</span>
+  ) : null;
 }
 function Card({
   title,
@@ -108,26 +126,52 @@ function Empty({ children }: { children: ReactNode }) {
 }
 export default function App() {
   const dialogRef = useRef<HTMLElement>(null);
-  const [data, setData] = useState<State>(load);
+  const [initial] = useState(load);
+  const [data, setData] = useState<State>(initial.data);
+  const [editHabit, setEditHabit] = useState<number | null>(null);
+  const [editDate, setEditDate] = useState<number | null>(null);
+  const [habitDate, setHabitDate] = useState(day());
+  const [pendingSchool, setPendingSchool] = useState<Assignment["type"] | null>(
+    null,
+  );
+  const [assignmentType, setAssignmentType] =
+    useState<Assignment["type"]>("Assignment");
+  const [, refreshDate] = useState(day());
   const [page, setPage] = useState<Page>("Today");
   const [courseId, setCourseId] = useState<string | null>(null);
   const [modal, setModal] = useState<
-    "task" | "course" | "assignment" | "weight" | "workout" | "nutrition" | null
+    | "task"
+    | "course"
+    | "assignment"
+    | "weight"
+    | "workout"
+    | "nutrition"
+    | "quick"
+    | "habit"
+    | "habitCompletion"
+    | "date"
+    | null
   >(null);
   const [editTask, setEditTask] = useState<Task | null>(null);
   const [editAssignment, setEditAssignment] = useState<Assignment | null>(null);
   const [taskFilter, setTaskFilter] = useState("All");
-  const [theme, setTheme] = useState(
-    () => localStorage.getItem("dylan-theme") || "light",
-  );
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem("dylan-theme") || "light";
+    } catch {
+      return "light";
+    }
+  });
   const [menu, setMenu] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [formError, setFormError] = useState("");
+  const [notice, setNotice] = useState(initial.error);
   const [messages, setMessages] = useState<{ role: string; text: string }[]>(
     [],
   );
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => {
+    setFormError("");
     if (!modal) return;
     const previous = document.activeElement as HTMLElement;
     const dialog = dialogRef.current;
@@ -137,11 +181,11 @@ export default function App() {
           'button,input,select,textarea,[tabindex="0"]',
         ) || [],
       ).filter((el) => !el.hasAttribute("disabled"));
-    focusable()
-      .find((el) => el.tagName === "INPUT")
-      ?.focus();
+    (
+      focusable().find((el) => el.tagName === "INPUT") || focusable()[0]
+    )?.focus();
     function key(e: KeyboardEvent) {
-      if (e.key === "Escape") setModal(null);
+      if (e.key === "Escape") closeModal();
       if (e.key === "Tab") {
         const nodes = focusable();
         const first = nodes[0],
@@ -161,11 +205,22 @@ export default function App() {
       previous?.focus();
     };
   }, [modal]);
+  useEffect(() => {
+    const timer = setInterval(() => refreshDate(day()), 60000);
+    return () => clearInterval(timer);
+  }, []);
   document.documentElement.dataset.theme = theme;
   function update(next: State) {
+    if (initial.error) {
+      setNotice(initial.error);
+      return;
+    }
     setData(next);
     try {
-      localStorage.setItem("dylan-os-v1", JSON.stringify(next));
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ ...next, schemaVersion: 2 }),
+      );
       setNotice("");
     } catch {
       setNotice(
@@ -179,16 +234,20 @@ export default function App() {
     setMenu(false);
   }
   const todayTasks = data.tasks.filter((t) => t.due === day() && !t.completed);
-  const priorities = data.tasks.filter(
-    (t) => !t.completed && t.priority === "High" && t.due <= day(),
-  );
-  const deadlines = data.assignments
+  const priorities = dueTasks(data);
+  const overdueTasks = priorities.filter((t) => t.due < day());
+  const deadlines = [...data.assignments]
     .filter((a) => !a.completed)
     .sort((a, b) => a.due.localeCompare(b.due));
+  const todaySchool = schoolWorkload(data, day(), 14);
+  const upcomingAssignments = todaySchool.filter(
+    (a) => a.type === "Assignment",
+  );
+  const upcomingExams = todaySchool.filter((a) => a.type === "Exam");
   const weights = [...data.weights].sort((a, b) =>
     a.date.localeCompare(b.date),
   );
-  const weight = weights.at(-1)?.value || 0;
+  const weight = weights.at(-1)?.value ?? null;
   const avg = averageWeight(weights);
   const previousAvg = averageWeight(weights, day(-7));
   const nutrition = data.nutrition.find((n) => n.date === day()) || {
@@ -206,7 +265,10 @@ export default function App() {
     .sort((a, b) => a.date.localeCompare(b.date));
   function taskRow(t: Task) {
     return (
-      <div className={`task-row ${t.completed ? "done" : ""}`} key={t.id}>
+      <div
+        className={`task-row ${t.completed ? "done" : ""} ${urgency(t.due, t.completed)?.level || ""}`}
+        key={t.id}
+      >
         <button
           className="checkbox"
           aria-label={`${t.completed ? "Reopen" : "Complete"} ${t.name}`}
@@ -227,9 +289,7 @@ export default function App() {
           <div className="row-meta">
             {t.category} {t.recurring && "· Daily recurring"} ·{" "}
             {formatDate(t.due)}
-            {t.due < day() && !t.completed && (
-              <span className="overdue"> · Overdue</span>
-            )}
+            <Urgency due={t.due} completed={t.completed} />
           </div>
         </div>
         <span className={`priority ${t.priority.toLowerCase()}`}>
@@ -241,7 +301,10 @@ export default function App() {
   function assignmentRow(a: Assignment) {
     const course = data.courses.find((c) => c.id === a.courseId);
     return (
-      <div className="assignment-row" key={a.id}>
+      <div
+        className={`assignment-row ${urgency(a.due, a.completed)?.level || ""}`}
+        key={a.id}
+      >
         <div className="date-tile">
           <strong>{new Date(a.due + "T12:00:00").getDate()}</strong>
           <span>
@@ -262,22 +325,15 @@ export default function App() {
           </button>
           <div className="row-meta">
             {course?.code} · {a.type}
-            {a.due < day() && !a.completed && (
-              <span className="overdue"> · Overdue</span>
-            )}
+            <Urgency due={a.due} completed={a.completed} />
+            {a.grade != null && <span> · {a.grade}%</span>}
+            {a.notes && <p className="row-meta">{a.notes}</p>}
           </div>
         </div>
         <button
           className={`checkbox ${a.completed ? "checked" : ""}`}
           aria-label={`${a.completed ? "Reopen" : "Complete"} ${a.name}`}
-          onClick={() =>
-            update({
-              ...data,
-              assignments: data.assignments.map((x) =>
-                x.id === a.id ? { ...x, completed: !x.completed } : x,
-              ),
-            })
-          }
+          onClick={() => update(toggleAssignment(data, a.id))}
         >
           {a.completed && <Check size={13} />}
         </button>
@@ -287,7 +343,11 @@ export default function App() {
   function weightChart() {
     return (
       <Suspense fallback={<div className="chart muted">Loading chart…</div>}>
-        <WeightChart weights={weights} />
+        {weights.length ? (
+          <WeightChart weights={weights} />
+        ) : (
+          <Empty>Log your first weight to start tracking progress.</Empty>
+        )}
       </Suspense>
     );
   }
@@ -325,6 +385,7 @@ export default function App() {
         due: value("due"),
         completed: editTask?.completed || false,
         recurring: f.get("recurring") === "on",
+        completedOn: editTask?.completedOn,
       };
       if (!t.name) return;
       update({
@@ -340,7 +401,7 @@ export default function App() {
         name: value("name").trim(),
         code: value("code").trim(),
         instructor: value("instructor"),
-        grade: number("grade"),
+        grade: value("grade") === "" ? null : number("grade"),
         notes: value("notes"),
       };
       if (!c.name) return;
@@ -359,8 +420,11 @@ export default function App() {
         due: value("due"),
         type: value("type") as Assignment["type"],
         completed: editAssignment?.completed || false,
+        completedOn: editAssignment?.completedOn,
+        grade: value("grade") === "" ? null : number("grade"),
+        notes: value("notes"),
       };
-      if (!a.name) return;
+      if (!a.name || !data.courses.some((c) => c.id === a.courseId)) return;
       update({
         ...data,
         assignments: editAssignment
@@ -373,10 +437,20 @@ export default function App() {
       update({
         ...data,
         weights: [...data.weights.filter((w) => w.date !== entry.date), entry],
-        goalWeight: number("goal"),
+        goalWeight: value("goal") === "" ? null : number("goal"),
       });
     }
     if (modal === "workout") {
+      if (!value("name").trim() || !value("exercise").trim()) {
+        setFormError("Enter a workout and exercise name.");
+        return;
+      }
+      if (value("status") === "Completed" && value("date") > day()) {
+        setFormError(
+          "Choose Planned for a future workout, or log a past/current date.",
+        );
+        return;
+      }
       update({
         ...data,
         workouts: [
@@ -388,32 +462,91 @@ export default function App() {
             exercise: value("exercise").trim(),
             weight: number("weight"),
             reps: number("reps"),
-            completed: true,
+            completed: value("status") === "Completed",
           },
         ],
       });
     }
     if (modal === "nutrition") {
       const entry = {
-        date: day(),
+        date: value("date"),
         calories: number("calories"),
         protein: number("protein"),
         steps: number("steps"),
       };
       update({
         ...data,
-        nutrition: [...data.nutrition.filter((n) => n.date !== day()), entry],
+        nutrition: [
+          ...data.nutrition.filter((n) => n.date !== entry.date),
+          entry,
+        ],
       });
     }
-    setModal(null);
+    if (modal === "habit") {
+      const name = value("name").trim();
+      if (!name) return;
+      if (
+        data.habits.some(
+          (h, i) =>
+            i !== editHabit && h.name.toLowerCase() === name.toLowerCase(),
+        )
+      ) {
+        setFormError("That habit already exists.");
+        return;
+      }
+      const habit =
+        editHabit === null
+          ? { name, dates: [], createdOn: day() }
+          : { ...data.habits[editHabit], name };
+      update({
+        ...data,
+        habits:
+          editHabit === null
+            ? [...data.habits, habit]
+            : data.habits.map((h, i) => (i === editHabit ? habit : h)),
+      });
+    }
+    if (modal === "date") {
+      const date = { name: value("name").trim(), date: value("date") };
+      if (!date.name) return;
+      update({
+        ...data,
+        dates:
+          editDate === null
+            ? [...data.dates, date]
+            : data.dates.map((d, i) => (i === editDate ? date : d)),
+      });
+    }
+    if (modal === "course" && pendingSchool) {
+      setAssignmentType(pendingSchool);
+      setPendingSchool(null);
+      setModal("assignment");
+      return;
+    }
+    closeModal();
     setEditTask(null);
     setEditAssignment(null);
+  }
+  function closeModal() {
+    setModal(null);
+    setPendingSchool(null);
   }
   const addTask = () => {
     setEditTask(null);
     setModal("task");
   };
-  const addAssignment = () => {
+  const addAssignment = (type: Assignment["type"] = "Assignment") => {
+    setEditAssignment(null);
+    if (!data.courses.length) {
+      setPendingSchool(type);
+      setCourseId(null);
+      setNotice(
+        "Add your course first; your assignment or exam form opens next.",
+      );
+      setModal("course");
+      return;
+    }
+    setAssignmentType(type);
     setEditAssignment(null);
     setModal("assignment");
   };
@@ -440,7 +573,7 @@ export default function App() {
           {navigation.map((n) => (
             <button
               key={n.name}
-              className={`nav-item ${page === n.name ? "active" : ""}`}
+              className={`nav-item ${page === n.name || (page === "Weekly Review" && n.name === "Today") ? "active" : ""}`}
               onClick={() => navigate(n.name)}
             >
               <n.icon size={19} />
@@ -463,7 +596,11 @@ export default function App() {
             onClick={() => {
               const next = theme === "light" ? "dark" : "light";
               setTheme(next);
-              localStorage.setItem("dylan-theme", next);
+              try {
+                localStorage.setItem("dylan-theme", next);
+              } catch {
+                setNotice("Theme changes cannot be saved on this browser.");
+              }
             }}
           >
             {theme === "light" ? <Moon size={17} /> : <Sun size={17} />}{" "}
@@ -506,8 +643,8 @@ export default function App() {
             </span>
             <button
               className="icon-button"
-              aria-label="Add task"
-              onClick={addTask}
+              aria-label="Quick add"
+              onClick={() => setModal("quick")}
             >
               <Plus size={19} />
             </button>
@@ -539,9 +676,17 @@ export default function App() {
                   </h1>
                   <p>A clear mind. A little momentum. Your day, at a glance.</p>
                 </div>
-                <button className="primary" onClick={addTask}>
-                  <Plus size={17} /> Quick add
-                </button>
+                <div className="heading-actions">
+                  <button
+                    className="secondary"
+                    onClick={() => setPage("Weekly Review")}
+                  >
+                    Weekly review
+                  </button>
+                  <button className="primary" onClick={() => setModal("quick")}>
+                    <Plus size={17} /> Quick add
+                  </button>
+                </div>
               </div>
               <div className="focus-banner">
                 <div className="focus-icon">
@@ -570,10 +715,11 @@ export default function App() {
                   </strong>
                   <p>
                     {
-                      data.tasks.filter((t) => t.due === day() && t.completed)
-                        .length
+                      data.tasks.filter(
+                        (t) => t.completedOn === day() && t.completed,
+                      ).length
                     }{" "}
-                    completed today
+                    completed today · {overdueTasks.length} overdue
                   </p>
                 </div>
                 <div className="stat">
@@ -581,7 +727,7 @@ export default function App() {
                     <GraduationCap size={16} /> College deadlines
                   </span>
                   <strong>
-                    {deadlines.filter((a) => a.due <= day(7)).length}
+                    {schoolWorkload(data).length}
                     <small>this week</small>
                   </strong>
                   <p>
@@ -595,12 +741,14 @@ export default function App() {
                     <Target size={16} /> Current weight
                   </span>
                   <strong>
-                    {weight}
+                    {weight ?? "—"}
                     <small>lb</small>
                   </strong>
                   <p className="green">
                     <ArrowDownRight size={13} />
-                    {(avg - previousAvg).toFixed(1)} lb vs. last week’s average
+                    {avg && previousAvg
+                      ? `${(avg - previousAvg).toFixed(1)} lb vs. last week’s average`
+                      : "Log weights to see your trend"}
                   </p>
                 </div>
                 <div className="stat">
@@ -617,8 +765,8 @@ export default function App() {
               <div className="today-grid">
                 <div className="column">
                   <Card
-                    title="Top priorities"
-                    subtitle="Put your energy where it matters."
+                    title="Needs your attention"
+                    subtitle="Overdue first, then today’s tasks by priority."
                     action={<span className="pill">FOCUS</span>}
                   >
                     <div className="priorities">
@@ -627,7 +775,10 @@ export default function App() {
                           <span className="priority-number">0{i + 1}</span>
                           <div>
                             <strong>{t.name}</strong>
-                            <p>{t.category}</p>
+                            <p>
+                              {t.category} · {formatDate(t.due)}{" "}
+                              <Urgency due={t.due} />
+                            </p>
                           </div>
                           <button
                             className="icon-button"
@@ -640,11 +791,19 @@ export default function App() {
                       ))}
                       {!priorities.length && (
                         <Empty>
-                          No urgent priorities. Pick something meaningful.
+                          No tasks due or overdue. Add your next intention.
                         </Empty>
                       )}
                     </div>
                   </Card>
+                  {overdueTasks.length > 0 && (
+                    <Card
+                      title="Overdue tasks"
+                      subtitle="Still open. Complete or reschedule these first."
+                    >
+                      {overdueTasks.map(taskRow)}
+                    </Card>
+                  )}
                   <Card
                     title="Today’s tasks"
                     action={
@@ -665,7 +824,8 @@ export default function App() {
                     </button>
                   </Card>
                   <Card
-                    title="College, coming up"
+                    title="Upcoming assignments"
+                    subtitle="Next 14 days, plus overdue assignments."
                     action={
                       <button
                         className="subtle-link"
@@ -675,9 +835,26 @@ export default function App() {
                       </button>
                     }
                   >
-                    {deadlines.slice(0, 3).map(assignmentRow)}
+                    {upcomingAssignments.map(assignmentRow)}
                     {!deadlines.length && (
                       <Empty>No pending assignments.</Empty>
+                    )}
+                  </Card>
+                  <Card
+                    title="Upcoming exams"
+                    subtitle="Next 14 days, plus overdue exams."
+                    action={
+                      <button
+                        className="subtle-link"
+                        onClick={() => addAssignment("Exam")}
+                      >
+                        <Plus size={14} /> Exam
+                      </button>
+                    }
+                  >
+                    {upcomingExams.map(assignmentRow)}
+                    {!upcomingExams.length && (
+                      <Empty>No exams due in the next 14 days.</Empty>
                     )}
                   </Card>
                 </div>
@@ -733,75 +910,150 @@ export default function App() {
                   <Card
                     title="Small habits. Big impact."
                     subtitle="A little consistency goes a long way."
+                    action={
+                      <button
+                        className="subtle-link"
+                        onClick={() => {
+                          setEditHabit(null);
+                          setModal("habit");
+                        }}
+                      >
+                        <Plus size={14} /> Habit
+                      </button>
+                    }
                   >
                     {data.habits.map((h, i) => (
                       <div className="habit-row" key={h.name}>
                         <button
                           className={`checkbox ${h.dates.includes(day()) ? "checked" : ""}`}
                           aria-label={`Toggle ${h.name}`}
-                          onClick={() =>
-                            update({
-                              ...data,
-                              habits: data.habits.map((x, j) =>
-                                j === i
-                                  ? {
-                                      ...x,
-                                      dates: x.dates.includes(day())
-                                        ? x.dates.filter((d) => d !== day())
-                                        : [...x.dates, day()],
-                                    }
-                                  : x,
-                              ),
-                            })
-                          }
+                          onClick={() => update(toggleHabit(data, i))}
                         >
                           {h.dates.includes(day()) && <Check size={13} />}
                         </button>
-                        <span>{h.name}</span>
+                        <button
+                          className="text-button"
+                          onClick={() => {
+                            setEditHabit(i);
+                            setModal("habit");
+                          }}
+                        >
+                          {h.name}
+                        </button>
                       </div>
                     ))}
                     <div className="progress-track">
                       <div
                         style={{
-                          width: `${(habitsDone / data.habits.length) * 100}%`,
+                          width: `${(habitsDone / (data.habits.length || 1)) * 100}%`,
                         }}
                       />
                     </div>
                     <div className="progress-caption">
                       {habitsDone} of {data.habits.length} habits complete{" "}
                       <span>
-                        {Math.round((habitsDone / data.habits.length) * 100)}%
+                        {Math.round(
+                          (habitsDone / (data.habits.length || 1)) * 100,
+                        )}
+                        %
                       </span>
                     </div>
                   </Card>
                   <Card
                     title="Weight trend"
-                    action={<span className="pill">28 DAYS</span>}
+                    action={
+                      <button
+                        className="subtle-link"
+                        onClick={() => setModal("weight")}
+                      >
+                        Log weight
+                      </button>
+                    }
                   >
                     <div className="mini-stat">
                       <strong>
-                        {avg.toFixed(1)} <small>lb</small>
+                        {avg ? avg.toFixed(1) : "—"} <small>lb</small>
                       </strong>
                       <span>7-day average</span>
                     </div>
                     {weightChart()}
+                    <div className="important-date">
+                      <span>Goal weight</span>
+                      <strong>
+                        {data.goalWeight === null
+                          ? "Not set"
+                          : `${data.goalWeight} lb`}
+                      </strong>
+                    </div>
+                    <div className="important-date">
+                      <span>Today’s steps</span>
+                      <strong>
+                        {data.nutrition.some((n) => n.date === day())
+                          ? nutrition.steps.toLocaleString()
+                          : "Not logged"}
+                      </strong>
+                    </div>
+                    <div className="important-date">
+                      <span>Workouts · last 7 days</span>
+                      <strong>
+                        {sessionCount(
+                          completedWorkouts.filter(
+                            (w) => w.date >= day(-6) && w.date <= day(),
+                          ),
+                        )}
+                      </strong>
+                    </div>
                   </Card>
                   <Card
                     title="On the horizon"
-                    action={<CalendarDays size={17} className="muted" />}
+                    action={
+                      <button
+                        className="subtle-link"
+                        onClick={() => {
+                          setEditDate(null);
+                          setModal("date");
+                        }}
+                      >
+                        <Plus size={14} /> Date
+                      </button>
+                    }
                   >
                     {data.dates
+                      .map((d, i) => ({ ...d, index: i }))
                       .filter((d) => d.date >= day())
+                      .sort((a, b) => a.date.localeCompare(b.date))
                       .map((d) => (
-                        <div className="important-date" key={d.name}>
-                          <span>{d.name}</span>
-                          <strong>{formatDate(d.date)}</strong>
+                        <div className="important-date" key={d.index}>
+                          <button
+                            className="text-button"
+                            onClick={() => {
+                              setEditDate(d.index);
+                              setModal("date");
+                            }}
+                          >
+                            {d.name}
+                          </button>
+                          <strong>
+                            {formatDate(d.date)} <Urgency due={d.date} />
+                          </strong>
                         </div>
                       ))}
+                    {!data.dates.some((d) => d.date >= day()) && (
+                      <Empty>
+                        Add a birthday, break, or important deadline.
+                      </Empty>
+                    )}
                   </Card>
                 </div>
               </div>
             </>
+          )}
+          {page === "Weekly Review" && (
+            <WeeklyReview
+              data={data}
+              onToday={() => navigate("Today")}
+              onFitness={() => navigate("Fitness")}
+            />
           )}
           {page === "College" && (
             <>
@@ -834,6 +1086,30 @@ export default function App() {
               </div>
               {!selectedCourse ? (
                 <>
+                  {data.courses.length > 0 && (
+                    <p className="tip">
+                      Open a course to edit its details, grades, and notes.
+                      Delete unwanted courses from Edit course; linked
+                      assignments and exams are removed with confirmation.
+                    </p>
+                  )}
+                  {!data.courses.length && (
+                    <section className="card onboarding">
+                      <GraduationCap size={25} />
+                      <h2>Make college your own.</h2>
+                      <p>
+                        Add your course name and code, then enter assignments,
+                        exams, grades, and notes from its page. Deadlines flow
+                        straight into Today.
+                      </p>
+                      <button
+                        className="primary"
+                        onClick={() => setModal("course")}
+                      >
+                        Add your first course
+                      </button>
+                    </section>
+                  )}
                   <div className="course-grid">
                     {data.courses.map((c, i) => (
                       <button
@@ -858,7 +1134,8 @@ export default function App() {
                             upcoming
                           </span>
                           <strong>
-                            {c.grade}% <small>grade</small>
+                            {c.grade === null ? "Not graded" : `${c.grade}%`}{" "}
+                            <small>{c.grade === null ? "" : "grade"}</small>
                           </strong>
                         </footer>
                       </button>
@@ -871,8 +1148,8 @@ export default function App() {
                       action={
                         <button
                           className="subtle-link"
-                          disabled={!data.courses.length}
-                          onClick={addAssignment}
+
+                          onClick={() => addAssignment()}
                         >
                           <Plus size={15} /> Assignment
                         </button>
@@ -902,7 +1179,10 @@ export default function App() {
                   <Card
                     title="Assignments & exams"
                     action={
-                      <button className="subtle-link" onClick={addAssignment}>
+                      <button
+                        className="subtle-link"
+                        onClick={() => addAssignment()}
+                      >
                         <Plus size={15} /> Add
                       </button>
                     }
@@ -918,8 +1198,10 @@ export default function App() {
                   <div className="column">
                     <Card title="Current grade">
                       <div className="big-number">
-                        {selectedCourse.grade}
-                        <small>%</small>
+                        {selectedCourse.grade ?? "—"}
+                        <small>
+                          {selectedCourse.grade === null ? "" : "%"}
+                        </small>
                       </div>
                       <p className="muted">
                         Manually recorded course grade. Edit the course to
@@ -967,7 +1249,7 @@ export default function App() {
                 <div className="stat">
                   <span>Body weight</span>
                   <strong>
-                    {weight}
+                    {weight ?? "—"}
                     <small>lb</small>
                   </strong>
                   <button
@@ -980,19 +1262,25 @@ export default function App() {
                 <div className="stat">
                   <span>7-day average</span>
                   <strong>
-                    {avg.toFixed(1)}
+                    {avg ? avg.toFixed(1) : "—"}
                     <small>lb</small>
                   </strong>
-                  <p>{(avg - previousAvg).toFixed(1)} lb from prior 7 days</p>
+                  <p>
+                    {avg && previousAvg
+                      ? `${(avg - previousAvg).toFixed(1)} lb from prior 7 days`
+                      : "More entries needed to compare weeks"}
+                  </p>
                 </div>
                 <div className="stat">
                   <span>Goal weight</span>
                   <strong>
-                    {data.goalWeight}
+                    {data.goalWeight ?? "—"}
                     <small>lb</small>
                   </strong>
                   <p>
-                    {Math.abs(weight - data.goalWeight).toFixed(1)} lb from goal
+                    {weight !== null && data.goalWeight !== null
+                      ? `${Math.abs(weight - data.goalWeight).toFixed(1)} lb from goal`
+                      : "Set a goal when logging weight"}
                   </p>
                 </div>
                 <div className="stat">
@@ -1123,6 +1411,12 @@ export default function App() {
                             <td>
                               <button
                                 className="pill"
+                                disabled={!w.completed && w.date > day()}
+                                title={
+                                  !w.completed && w.date > day()
+                                    ? "Complete on or after the planned date"
+                                    : undefined
+                                }
                                 onClick={() =>
                                   update({
                                     ...data,
@@ -1160,28 +1454,32 @@ export default function App() {
                 </button>
               </div>
               <div className="task-tabs" role="group" aria-label="Filter tasks">
-                {["All", "Today", "Upcoming", "Completed"].map((f) => (
-                  <button
-                    className={taskFilter === f ? "selected" : ""}
-                    key={f}
-                    onClick={() => setTaskFilter(f)}
-                  >
-                    {f}
-                    <span>
-                      {
-                        data.tasks.filter((t) =>
-                          f === "All"
-                            ? true
-                            : f === "Today"
-                              ? t.due === day() && !t.completed
-                              : f === "Upcoming"
-                                ? t.due > day() && !t.completed
-                                : t.completed,
-                        ).length
-                      }
-                    </span>
-                  </button>
-                ))}
+                {["All", "Today", "Overdue", "Upcoming", "Completed"].map(
+                  (f) => (
+                    <button
+                      className={taskFilter === f ? "selected" : ""}
+                      key={f}
+                      onClick={() => setTaskFilter(f)}
+                    >
+                      {f}
+                      <span>
+                        {
+                          data.tasks.filter((t) =>
+                            f === "All"
+                              ? true
+                              : f === "Today"
+                                ? t.due === day() && !t.completed
+                                : f === "Overdue"
+                                  ? t.due < day() && !t.completed
+                                  : f === "Upcoming"
+                                    ? t.due > day() && !t.completed
+                                    : t.completed,
+                          ).length
+                        }
+                      </span>
+                    </button>
+                  ),
+                )}
               </div>
               <Card
                 title={
@@ -1195,9 +1493,11 @@ export default function App() {
                       ? true
                       : taskFilter === "Today"
                         ? t.due === day() && !t.completed
-                        : taskFilter === "Upcoming"
-                          ? t.due > day() && !t.completed
-                          : t.completed,
+                        : taskFilter === "Overdue"
+                          ? t.due < day() && !t.completed
+                          : taskFilter === "Upcoming"
+                            ? t.due > day() && !t.completed
+                            : t.completed,
                   )
                   .sort(
                     (a, b) =>
@@ -1210,9 +1510,11 @@ export default function App() {
                     ? true
                     : taskFilter === "Today"
                       ? t.due === day() && !t.completed
-                      : taskFilter === "Upcoming"
-                        ? t.due > day() && !t.completed
-                        : t.completed,
+                      : taskFilter === "Overdue"
+                        ? t.due < day() && !t.completed
+                        : taskFilter === "Upcoming"
+                          ? t.due > day() && !t.completed
+                          : t.completed,
                 ) && <Empty>No tasks in this view.</Empty>}
                 <button className="add-inline" onClick={addTask}>
                   <Plus size={15} /> Add a task
@@ -1349,12 +1651,12 @@ export default function App() {
             <span>
               Dylan OS <span>·</span> A little better, every day.
             </span>
-            <span>V1 foundation · Sample data · Stored on this device</span>
+            <span>V1.1 · Your workspace · Stored on this device</span>
           </footer>
         </div>
       </main>
       {modal && (
-        <div className="modal-backdrop" onClick={() => setModal(null)}>
+        <div className="modal-backdrop" onClick={() => closeModal()}>
           <section
             ref={dialogRef}
             className="modal"
@@ -1365,348 +1667,590 @@ export default function App() {
           >
             <div className="card-heading">
               <h2 id="modal-title">
-                {modal === "task"
-                  ? editTask
-                    ? "Edit task"
-                    : "A new intention"
-                  : modal === "course"
-                    ? selectedCourse
-                      ? "Edit course"
-                      : "Add a course"
-                    : modal === "assignment"
-                      ? editAssignment
-                        ? "Edit assignment"
-                        : "Add an assignment"
-                      : modal === "weight"
-                        ? "Log your weight"
-                        : modal === "nutrition"
-                          ? "Daily fuel & movement"
-                          : "Log a workout"}
+                {modal === "quick"
+                  ? "Quick add"
+                  : modal === "habitCompletion"
+                    ? "Habit check-in"
+                    : modal === "habit"
+                      ? "Your daily habit"
+                      : modal === "date"
+                        ? "Important date"
+                        : modal === "task"
+                          ? editTask
+                            ? "Edit task"
+                            : "A new intention"
+                          : modal === "course"
+                            ? selectedCourse
+                              ? "Edit course"
+                              : "Add a course"
+                            : modal === "assignment"
+                              ? editAssignment
+                                ? "Edit assignment"
+                                : "Add an assignment"
+                              : modal === "weight"
+                                ? "Log your weight"
+                                : modal === "nutrition"
+                                  ? "Daily fuel & movement"
+                                  : "Log a workout"}
               </h2>
               <button
                 className="icon-button"
                 aria-label="Close dialog"
-                onClick={() => setModal(null)}
+                onClick={() => closeModal()}
               >
                 <X size={20} />
               </button>
             </div>
-            <form onSubmit={saveForm}>
-              {modal === "task" && (
-                <>
+            {formError && (
+              <div className="banner" role="alert">
+                {formError}
+              </div>
+            )}
+            {modal === "quick" ? (
+              <div className="quick-grid">
+                {[
+                  { name: "Task", action: addTask },
+                  { name: "Assignment", action: () => addAssignment() },
+                  { name: "Exam", action: () => addAssignment("Exam") },
+                  { name: "Weight entry", action: () => setModal("weight") },
+                  { name: "Workout", action: () => setModal("workout") },
+                  {
+                    name: "Habit completion",
+                    action: () => {
+                      setHabitDate(day());
+                      setModal("habitCompletion");
+                    },
+                  },
+                ].map((item) => (
+                  <button
+                    className="secondary"
+                    key={item.name}
+                    onClick={item.action}
+                  >
+                    <Plus size={15} />
+                    {item.name}
+                  </button>
+                ))}
+              </div>
+            ) : modal === "habitCompletion" ? (
+              <div>
+                <label className="check-in-date">
+                  Check-in date
+                  <input
+                    aria-label="Check-in date"
+                    type="date"
+                    max={day()}
+                    value={habitDate}
+                    onChange={(e) => setHabitDate(e.target.value || day())}
+                  />
+                </label>
+                {data.habits
+                  .filter((h) => !h.createdOn || h.createdOn <= habitDate)
+                  .map((h) => {
+                    const i = data.habits.indexOf(h);
+                    return (
+                      <div className="habit-row" key={h.name}>
+                        <button
+                          className={`checkbox ${h.dates.includes(habitDate) ? "checked" : ""}`}
+                          aria-label={`Toggle ${h.name}`}
+                          onClick={() =>
+                            update(toggleHabit(data, i, habitDate))
+                          }
+                        >
+                          {h.dates.includes(habitDate) && <Check size={13} />}
+                        </button>
+                        <span>{h.name}</span>
+                      </div>
+                    );
+                  })}
+                {!data.habits.length && (
+                  <Empty>Add a habit first to start checking in.</Empty>
+                )}
+                <button
+                  className="secondary"
+                  onClick={() => {
+                    setEditHabit(null);
+                    setModal("habit");
+                  }}
+                >
+                  Add a habit
+                </button>
+                <button className="primary" onClick={() => closeModal()}>
+                  Done
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={saveForm}>
+                {modal === "habit" && (
                   <label>
-                    Task name
+                    Habit name
                     <input
                       name="name"
                       required
-                      autoFocus
-                      maxLength={150}
-                      defaultValue={editTask?.name}
-                    />
-                  </label>
-                  <div className="form-grid">
-                    <label>
-                      Category
-                      <select
-                        name="category"
-                        defaultValue={editTask?.category || "Personal"}
-                      >
-                        {["Personal", "College", "Fitness", "Work"].map((c) => (
-                          <option key={c}>{c}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Priority
-                      <select
-                        name="priority"
-                        defaultValue={editTask?.priority || "Medium"}
-                      >
-                        {["High", "Medium", "Low"].map((c) => (
-                          <option key={c}>{c}</option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                  <label>
-                    Due date
-                    <input
-                      name="due"
-                      type="date"
-                      required
-                      defaultValue={editTask?.due || day()}
-                    />
-                  </label>
-                  <label className="check-label">
-                    <input
-                      name="recurring"
-                      type="checkbox"
-                      defaultChecked={editTask?.recurring}
-                    />{" "}
-                    Repeat daily after completion
-                  </label>
-                </>
-              )}
-              {modal === "course" && (
-                <>
-                  <label>
-                    Course name
-                    <input
-                      name="name"
-                      required
-                      autoFocus
-                      defaultValue={selectedCourse?.name}
-                    />
-                  </label>
-                  <div className="form-grid">
-                    <label>
-                      Course code
-                      <input
-                        name="code"
-                        required
-                        defaultValue={selectedCourse?.code}
-                      />
-                    </label>
-                    <label>
-                      Current grade (%)
-                      <input
-                        name="grade"
-                        type="number"
-                        min="0"
-                        max="100"
-                        step="0.1"
-                        required
-                        defaultValue={selectedCourse?.grade || 0}
-                      />
-                    </label>
-                  </div>
-                  <label>
-                    Instructor
-                    <input
-                      name="instructor"
-                      defaultValue={selectedCourse?.instructor}
-                    />
-                  </label>
-                  <label>
-                    Notes
-                    <textarea
-                      name="notes"
-                      defaultValue={selectedCourse?.notes}
-                    />
-                  </label>
-                </>
-              )}
-              {modal === "assignment" && (
-                <>
-                  <label>
-                    Assignment name
-                    <input
-                      name="name"
-                      required
-                      autoFocus
-                      defaultValue={editAssignment?.name}
-                    />
-                  </label>
-                  <label>
-                    Course
-                    <select
-                      name="courseId"
-                      required
+                      maxLength={100}
                       defaultValue={
-                        editAssignment?.courseId ||
-                        courseId ||
-                        data.courses[0]?.id
+                        editHabit === null ? "" : data.habits[editHabit].name
                       }
-                    >
-                      {data.courses.map((c) => (
-                        <option value={c.id} key={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </label>
-                  <div className="form-grid">
+                )}
+                {modal === "date" && (
+                  <>
+                    <label>
+                      Name
+                      <input
+                        name="name"
+                        required
+                        defaultValue={
+                          editDate === null ? "" : data.dates[editDate].name
+                        }
+                      />
+                    </label>
+                    <label>
+                      Date
+                      <input
+                        name="date"
+                        type="date"
+                        required
+                        defaultValue={
+                          editDate === null ? day() : data.dates[editDate].date
+                        }
+                      />
+                    </label>
+                  </>
+                )}
+                {modal === "task" && (
+                  <>
+                    <label>
+                      Task name
+                      <input
+                        name="name"
+                        required
+                        autoFocus
+                        maxLength={150}
+                        defaultValue={editTask?.name}
+                      />
+                    </label>
+                    <div className="form-grid">
+                      <label>
+                        Category
+                        <select
+                          name="category"
+                          defaultValue={editTask?.category || "Personal"}
+                        >
+                          {["Personal", "College", "Fitness", "Work"].map(
+                            (c) => (
+                              <option key={c}>{c}</option>
+                            ),
+                          )}
+                        </select>
+                      </label>
+                      <label>
+                        Priority
+                        <select
+                          name="priority"
+                          defaultValue={editTask?.priority || "Medium"}
+                        >
+                          {["High", "Medium", "Low"].map((c) => (
+                            <option key={c}>{c}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
                     <label>
                       Due date
                       <input
                         name="due"
                         type="date"
                         required
-                        defaultValue={editAssignment?.due || day(1)}
+                        defaultValue={editTask?.due || day()}
+                      />
+                    </label>
+                    <label className="check-label">
+                      <input
+                        name="recurring"
+                        type="checkbox"
+                        defaultChecked={editTask?.recurring}
+                      />{" "}
+                      Repeat daily after completion
+                    </label>
+                  </>
+                )}
+                {modal === "course" && (
+                  <>
+                    <label>
+                      Course name
+                      <input
+                        name="name"
+                        required
+                        autoFocus
+                        defaultValue={selectedCourse?.name}
+                      />
+                    </label>
+                    <div className="form-grid">
+                      <label>
+                        Course code
+                        <input
+                          name="code"
+                          required
+                          defaultValue={selectedCourse?.code}
+                        />
+                      </label>
+                      <label>
+                        Current grade (%)
+                        <input
+                          name="grade"
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.1"
+                          defaultValue={selectedCourse?.grade ?? ""}
+                        />
+                      </label>
+                    </div>
+                    <label>
+                      Instructor
+                      <input
+                        name="instructor"
+                        defaultValue={selectedCourse?.instructor}
                       />
                     </label>
                     <label>
-                      Type
+                      Notes
+                      <textarea
+                        name="notes"
+                        defaultValue={selectedCourse?.notes}
+                      />
+                    </label>
+                  </>
+                )}
+                {modal === "assignment" && (
+                  <>
+                    <label>
+                      Assignment name
+                      <input
+                        name="name"
+                        required
+                        autoFocus
+                        defaultValue={editAssignment?.name}
+                      />
+                    </label>
+                    <label>
+                      Course
                       <select
-                        name="type"
-                        defaultValue={editAssignment?.type || "Assignment"}
+                        name="courseId"
+                        required
+                        defaultValue={
+                          editAssignment?.courseId ||
+                          courseId ||
+                          data.courses[0]?.id
+                        }
                       >
-                        <option>Assignment</option>
-                        <option>Exam</option>
+                        {data.courses.map((c) => (
+                          <option value={c.id} key={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
                       </select>
                     </label>
-                  </div>
-                </>
-              )}
-              {modal === "weight" && (
-                <>
-                  <label>
-                    Date
-                    <input
-                      name="date"
-                      type="date"
-                      max={day()}
-                      required
-                      defaultValue={day()}
-                    />
-                  </label>
-                  <div className="form-grid">
+                    <div className="form-grid">
+                      <label>
+                        Due date
+                        <input
+                          name="due"
+                          type="date"
+                          required
+                          defaultValue={editAssignment?.due || day(1)}
+                        />
+                      </label>
+                      <label>
+                        Type
+                        <select
+                          name="type"
+                          defaultValue={editAssignment?.type || assignmentType}
+                        >
+                          <option>Assignment</option>
+                          <option>Exam</option>
+                        </select>
+                      </label>
+                    </div>
+                  </>
+                )}
+                {modal === "assignment" && (
+                  <>
                     <label>
-                      Weight (lb)
+                      Grade (%) · optional
                       <input
-                        name="weight"
-                        type="number"
-                        min="1"
-                        max="1500"
-                        step="0.1"
-                        required
-                        defaultValue={weight}
-                      />
-                    </label>
-                    <label>
-                      Goal weight (lb)
-                      <input
-                        name="goal"
-                        type="number"
-                        min="1"
-                        max="1500"
-                        step="0.1"
-                        required
-                        defaultValue={data.goalWeight}
-                      />
-                    </label>
-                  </div>
-                </>
-              )}
-              {modal === "workout" && (
-                <>
-                  <label>
-                    Workout name
-                    <input
-                      name="name"
-                      required
-                      autoFocus
-                      placeholder="Upper body strength"
-                    />
-                  </label>
-                  <label>
-                    Date
-                    <input
-                      name="date"
-                      type="date"
-                      max={day()}
-                      required
-                      defaultValue={day()}
-                    />
-                  </label>
-                  <label>
-                    Exercise
-                    <input name="exercise" required placeholder="Bench press" />
-                  </label>
-                  <div className="form-grid">
-                    <label>
-                      Weight (lb)
-                      <input
-                        name="weight"
+                        name="grade"
                         type="number"
                         min="0"
-                        step="0.5"
-                        required
+                        max="100"
+                        step="0.1"
+                        defaultValue={editAssignment?.grade ?? ""}
                       />
                     </label>
                     <label>
-                      Reps
-                      <input
-                        name="reps"
-                        type="number"
-                        min="1"
-                        max="1000"
-                        required
+                      Notes
+                      <textarea
+                        name="notes"
+                        defaultValue={editAssignment?.notes || ""}
                       />
                     </label>
-                  </div>
-                  <p className="row-meta">
-                    Logs one completed working set. Add more entries for
-                    additional sets.
-                  </p>
-                </>
-              )}
-              {modal === "nutrition" && (
-                <>
-                  <label>
-                    Calories (kcal)
-                    <input
-                      name="calories"
-                      type="number"
-                      min="0"
-                      max="20000"
-                      required
-                      defaultValue={nutrition.calories}
-                    />
-                  </label>
-                  <label>
-                    Protein (g)
-                    <input
-                      name="protein"
-                      type="number"
-                      min="0"
-                      max="2000"
-                      required
-                      defaultValue={nutrition.protein}
-                    />
-                  </label>
-                  <label>
-                    Steps
-                    <input
-                      name="steps"
-                      type="number"
-                      min="0"
-                      max="200000"
-                      required
-                      defaultValue={nutrition.steps}
-                    />
-                  </label>
-                </>
-              )}
-              <div className="form-actions">
-                {editTask && modal === "task" && (
+                  </>
+                )}
+                {modal === "weight" && (
+                  <>
+                    <label>
+                      Date
+                      <input
+                        name="date"
+                        type="date"
+                        max={day()}
+                        required
+                        defaultValue={day()}
+                      />
+                    </label>
+                    <div className="form-grid">
+                      <label>
+                        Weight (lb)
+                        <input
+                          name="weight"
+                          type="number"
+                          min="1"
+                          max="1500"
+                          step="0.1"
+                          required
+                          defaultValue={weight ?? ""}
+                        />
+                      </label>
+                      <label>
+                        Goal weight (lb)
+                        <input
+                          name="goal"
+                          type="number"
+                          min="1"
+                          max="1500"
+                          step="0.1"
+                          defaultValue={data.goalWeight ?? ""}
+                        />
+                      </label>
+                    </div>
+                  </>
+                )}
+                {modal === "workout" && (
+                  <>
+                    <label>
+                      Workout name
+                      <input
+                        name="name"
+                        required
+                        autoFocus
+                        placeholder="Upper body strength"
+                      />
+                    </label>
+                    <label>
+                      Date
+                      <input
+                        name="date"
+                        type="date"
+                        required
+                        defaultValue={day()}
+                      />
+                    </label>
+                    <label>
+                      Status
+                      <select name="status" defaultValue="Completed">
+                        <option>Completed</option>
+                        <option>Planned</option>
+                      </select>
+                    </label>
+                    <label>
+                      Exercise
+                      <input
+                        name="exercise"
+                        required
+                        placeholder="Bench press"
+                      />
+                    </label>
+                    <div className="form-grid">
+                      <label>
+                        Weight (lb)
+                        <input
+                          name="weight"
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          required
+                        />
+                      </label>
+                      <label>
+                        Reps
+                        <input
+                          name="reps"
+                          type="number"
+                          min="1"
+                          max="1000"
+                          required
+                        />
+                      </label>
+                    </div>
+                    <p className="row-meta">
+                      Logs one working set. Add more entries for additional
+                      sets.
+                    </p>
+                  </>
+                )}
+                {modal === "nutrition" && (
+                  <>
+                    <label>
+                      Date
+                      <input
+                        name="date"
+                        type="date"
+                        required
+                        max={day()}
+                        defaultValue={day()}
+                      />
+                    </label>
+                    <label>
+                      Calories (kcal)
+                      <input
+                        name="calories"
+                        type="number"
+                        min="0"
+                        max="20000"
+                        required
+                        defaultValue={nutrition.calories}
+                      />
+                    </label>
+                    <label>
+                      Protein (g)
+                      <input
+                        name="protein"
+                        type="number"
+                        min="0"
+                        max="2000"
+                        required
+                        defaultValue={nutrition.protein}
+                      />
+                    </label>
+                    <label>
+                      Steps
+                      <input
+                        name="steps"
+                        type="number"
+                        min="0"
+                        max="200000"
+                        required
+                        defaultValue={nutrition.steps}
+                      />
+                    </label>
+                  </>
+                )}
+                <div className="form-actions">
+                  {selectedCourse && modal === "course" && (
+                    <button
+                      type="button"
+                      className="danger text-button"
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Delete ${selectedCourse.name} and its assignments/exams? This cannot be undone.`,
+                          )
+                        ) {
+                          update(removeCourse(data, selectedCourse.id));
+                          setModal(null);
+                          setCourseId(null);
+                        }
+                      }}
+                    >
+                      Delete course
+                    </button>
+                  )}
+                  {editAssignment && modal === "assignment" && (
+                    <button
+                      type="button"
+                      className="danger text-button"
+                      onClick={() => {
+                        update({
+                          ...data,
+                          assignments: data.assignments.filter(
+                            (a) => a.id !== editAssignment.id,
+                          ),
+                        });
+                        setModal(null);
+                      }}
+                    >
+                      Delete assignment
+                    </button>
+                  )}
+                  {editHabit !== null && modal === "habit" && (
+                    <button
+                      type="button"
+                      className="danger text-button"
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            "Delete this habit and its check-in history?",
+                          )
+                        ) {
+                          update({
+                            ...data,
+                            habits: data.habits.filter(
+                              (h, i) => i !== editHabit,
+                            ),
+                          });
+                          setModal(null);
+                        }
+                      }}
+                    >
+                      Delete habit
+                    </button>
+                  )}
+                  {editDate !== null && modal === "date" && (
+                    <button
+                      type="button"
+                      className="danger text-button"
+                      onClick={() => {
+                        update({
+                          ...data,
+                          dates: data.dates.filter((d, i) => i !== editDate),
+                        });
+                        setModal(null);
+                      }}
+                    >
+                      Delete date
+                    </button>
+                  )}
+                  {editTask && modal === "task" && (
+                    <button
+                      type="button"
+                      className="danger text-button"
+                      onClick={() => {
+                        update({
+                          ...data,
+                          tasks: data.tasks.filter((t) => t.id !== editTask.id),
+                        });
+                        closeModal();
+                        setEditTask(null);
+                      }}
+                    >
+                      Delete task
+                    </button>
+                  )}
                   <button
                     type="button"
-                    className="danger text-button"
-                    onClick={() => {
-                      update({
-                        ...data,
-                        tasks: data.tasks.filter((t) => t.id !== editTask.id),
-                      });
-                      setModal(null);
-                      setEditTask(null);
-                    }}
+                    className="secondary"
+                    onClick={() => closeModal()}
                   >
-                    Delete task
+                    Cancel
                   </button>
-                )}
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => setModal(null)}
-                >
-                  Cancel
-                </button>
-                <button className="primary" type="submit">
-                  Save {modal === "nutrition" ? "totals" : modal}
-                </button>
-              </div>
-            </form>
+                  <button className="primary" type="submit">
+                    Save {modal === "nutrition" ? "totals" : modal}
+                  </button>
+                </div>
+              </form>
+            )}
           </section>
         </div>
       )}

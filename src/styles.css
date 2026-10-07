@@ -1642,3 +1642,115 @@ tbody tr:last-child td {
     scroll-behavior: auto !important;
   }
 }
+/* Version 1.1: personal setup, urgency, and lightweight quick-entry flows. */
+.heading-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.urgency {
+  font-size: 9px;
+  font-weight: 600;
+  display: inline-block;
+  padding: 3px 6px;
+  border-radius: 4px;
+  margin-left: 5px;
+  white-space: nowrap;
+  letter-spacing: 0;
+}
+.urgency.overdue {
+  color: #a64f40;
+  background: #fcebe5;
+}
+.urgency.due-today {
+  color: #9d6b35;
+  background: #fbefdd;
+}
+.urgency.soon {
+  color: #96772f;
+  background: #f7f2df;
+}
+.task-row.overdue,
+.assignment-row.overdue {
+  border-left: 3px solid #ca8678;
+  padding-left: 10px;
+}
+.task-row.due-today,
+.assignment-row.due-today {
+  border-left: 3px solid #c4a574;
+  padding-left: 10px;
+}
+.quick-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.quick-grid .secondary {
+  padding: 18px 12px;
+  justify-content: flex-start;
+  font-size: 12px;
+}
+.onboarding {
+  margin-bottom: 24px;
+  padding: 27px;
+}
+.onboarding svg {
+  color: var(--green);
+  margin-bottom: 12px;
+}
+.onboarding p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.9;
+  max-width: 520px;
+}
+.check-in-date {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 11px;
+  margin-bottom: 20px;
+}
+.check-in-date input {
+  background: var(--input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 10px;
+  border-radius: 6px;
+}
+[data-theme="dark"] .urgency.overdue {
+  color: #e4a294;
+  background: #4d302b;
+}
+[data-theme="dark"] .urgency.due-today,
+[data-theme="dark"] .urgency.soon {
+  color: #ddc18e;
+  background: #443b27;
+}
+@media (max-width: 600px) {
+  .heading-actions {
+    flex-direction: column;
+    gap: 7px;
+  }
+  .heading-actions .primary,
+  .heading-actions .secondary {
+    padding: 9px 11px;
+    font-size: 10px;
+  }
+  .urgency {
+    font-size: 8px;
+  }
+  .task-tabs button {
+    white-space: nowrap;
+  }
+  .onboarding {
+    padding: 20px;
+  }
+  .quick-grid {
+    gap: 9px;
+  }
+  .quick-grid .secondary {
+    font-size: 11px;
+  }
+}
