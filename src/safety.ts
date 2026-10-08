@@ -14,7 +14,7 @@ export function emptyWorkspace(): State {
   };
 }
 import { localDate } from "./dates";
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 export const BACKUP_KEY = "dylan-os-backups-v1";
 export const EXPORT_KEY = "dylan-os-last-export";
 export const MAX_BACKUPS = 5;
@@ -71,9 +71,9 @@ function grade(v: unknown) {
 export function validateWorkspace(value: unknown): State {
   const root = object(value);
   const schema = root.schemaVersion === undefined ? 1 : root.schemaVersion;
-  if (!Number.isInteger(schema) || ![1, 2, 3].includes(schema as number))
+  if (!Number.isInteger(schema) || ![1, 2, 3, 4].includes(schema as number))
     throw new Error(
-      "Unsupported workspace schema. Supported versions: 1, 2, 3.",
+      "Unsupported workspace schema. Supported versions: 1, 2, 3, 4.",
     );
   for (const key of collections) {
     if (!Array.isArray(root[key]))
@@ -145,6 +145,11 @@ export function validateWorkspace(value: unknown): State {
     date(r.date, "Workout date");
     text(r.exercise, "Exercise");
     num(r.weight, "Working weight");
+    if (r.sets !== undefined) {
+      num(r.sets, "Sets", 1, 100);
+      if (!Number.isInteger(r.sets))
+        throw new Error("Sets must be whole numbers.");
+    }
     num(r.reps, "Reps", 1);
     if (!Number.isInteger(r.reps))
       throw new Error("Reps must be a whole number.");
@@ -162,6 +167,64 @@ export function validateWorkspace(value: unknown): State {
     const r = object(value);
     text(r.name, "Important date name");
     date(r.date, "Important date");
+  }
+  const validateDays = (days: unknown) => {
+    if (
+      !Array.isArray(days) ||
+      !days.length ||
+      days.some((d) => !Number.isInteger(d) || d < 0 || d > 6)
+    )
+      throw new Error("Habit schedule must contain weekdays 0–6.");
+  };
+  for (const h of root.habits as RecordValue[]) {
+    if (h.target !== undefined) {
+      num(h.target, "Habit target", 1, 100);
+      if (!Number.isInteger(h.target))
+        throw new Error("Habit target must be a whole number.");
+    }
+    if (h.schedule !== undefined) validateDays(h.schedule);
+    if (h.counts !== undefined) {
+      for (const [d, count] of Object.entries(object(h.counts))) {
+        date(d, "Habit history date");
+        num(count, "Habit count", 0, 100);
+        if (!Number.isInteger(count))
+          throw new Error("Habit counts must be whole numbers.");
+      }
+    }
+    if (h.scheduleHistory !== undefined) {
+      if (!Array.isArray(h.scheduleHistory))
+        throw new Error("Invalid habit schedule history.");
+      for (const entry of h.scheduleHistory) {
+        const p = object(entry);
+        date(p.effectiveOn, "Schedule effective date");
+        validateDays(p.days);
+        num(p.target, "Historical target", 1, 100);
+        if (!Number.isInteger(p.target))
+          throw new Error("Historical targets must be whole numbers.");
+      }
+    }
+  }
+  if (root.preferences !== undefined) {
+    const prefs = object(root.preferences);
+    if (prefs.dashboard !== undefined) {
+      const d = object(prefs.dashboard);
+      for (const key of ["order", "hidden"])
+        if (
+          !Array.isArray(d[key]) ||
+          (d[key] as unknown[]).some((x) => typeof x !== "string")
+        )
+          throw new Error("Invalid dashboard preferences.");
+    }
+    if (prefs.priorities !== undefined) {
+      const p = object(prefs.priorities);
+      date(p.date, "Priority date");
+      if (
+        !Array.isArray(p.ids) ||
+        p.ids.length > 3 ||
+        p.ids.some((x) => typeof x !== "string")
+      )
+        throw new Error("Choose up to three priorities.");
+    }
   }
   // Keep every unknown field, at every nesting level. No reconstruction from a field allowlist.
   return { ...root, schemaVersion: SCHEMA_VERSION } as State;

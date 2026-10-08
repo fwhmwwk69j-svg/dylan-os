@@ -1855,3 +1855,117 @@ tbody tr:last-child td {
     align-items: stretch;
   }
 }
+.daily-overview,
+.backup-nudge {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 15px;
+  font-size: 11px;
+  color: var(--muted);
+  margin: 16px 0 20px;
+}
+.backup-nudge {
+  padding: 12px 16px;
+  background: var(--soft);
+  border-radius: 9px;
+  margin-top: 0;
+}
+.backup-nudge > span {
+  flex: 1;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings-row label {
+  flex: 1;
+  margin: 0;
+  flex-direction: row;
+  align-items: center;
+  font-size: 11px;
+}
+.settings-row .secondary {
+  padding: 6px 10px;
+}
+.settings-subheading {
+  font-size: 13px;
+  margin: 20px 0 10px;
+}
+.habit-schedule {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.habit-schedule legend {
+  font-size: 11px;
+}
+.habit-schedule label {
+  flex-direction: row;
+  align-items: center;
+  font-size: 10px;
+  margin: 0;
+}
+.habit-history-card {
+  margin-bottom: 22px;
+}
+.personalized-grid > .column {
+  display: contents;
+}
+.personalized-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.habit-row {
+  flex-wrap: wrap;
+}
+.habit-row .row-meta {
+  margin-left: auto;
+}
+.backup-confirm {
+  background: var(--soft);
+  padding: 18px;
+  border-radius: 8px;
+  margin: 16px 0;
+}
+.backup-confirm button {
+  margin-right: 14px;
+}
+.sidebar {
+  overflow-y: auto;
+}
+.snapshot-row strong,
+.import-preview p {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 850px) {
+  .personalized-grid {
+    grid-template-columns: 1fr;
+  }
+  .today-grid.personalized-grid > .column:last-child {
+    display: contents;
+  }
+}
+@media (max-width: 600px) {
+  .daily-overview {
+    gap: 7px;
+    font-size: 10px;
+  }
+  .page-heading .heading-actions {
+    max-width: 115px;
+  }
+  .habit-row .row-meta {
+    font-size: 8px;
+  }
+  .backup-nudge {
+    gap: 10px;
+  }
+  .settings-row label {
+    font-size: 10px;
+  }
+}

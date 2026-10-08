@@ -1,4 +1,8 @@
+import { parseExportStatus } from "./daily";
+import CourseNotes from "./CourseNotes";
 import {
+  createContext,
+  useContext,
   lazy,
   Suspense,
   useState,
@@ -51,14 +55,28 @@ import {
   toggleHabit,
   removeCourse,
 } from "./personal";
-import DataBackup from "./DataBackup";
+import DashboardSettings from "./DashboardSettings";
+import HabitHistory from "./HabitHistory";
+import FitnessHistory from "./FitnessHistory";
 import {
-  persist,
-  clearWorkspace,
-  deletion,
-  undoDeletion,
-  type Deletion,
-} from "./safety";
+  dashboardPreferences,
+  scheduled,
+  habitComplete,
+  habitCount,
+  habitPlan,
+  habitStreak,
+  habitWeek,
+  setHabitCount,
+  editHabitPlan,
+  EXPORT_STATUS_KEY,
+  REMINDER_KEY,
+  backupReminder,
+  workspaceContent,
+  type ExportStatus,
+} from "./daily";
+import { coordinatedWrite } from "./crossTab";
+import DataBackup from "./DataBackup";
+import { deletion, undoDeletion, type Deletion } from "./safety";
 import WeeklyReview from "./WeeklyReview";
 const WeightChart = lazy(() => import("./Charts"));
 const BenchChart = lazy(() =>
@@ -70,6 +88,7 @@ type Page =
   | "Fitness"
   | "Tasks"
   | "AI Assistant"
+  | "Habits"
   | "Weekly Review"
   | "Data & Backup";
 const navigation = [
@@ -111,6 +130,20 @@ function Urgency({
     <span className={`urgency ${status.level}`}>{status.label}</span>
   ) : null;
 }
+const DashboardContext = createContext<ReturnType<
+  typeof dashboardPreferences
+> | null>(null);
+const CARD_IDS: Record<string, string> = {
+  "Needs your attention": "priorities",
+  "Overdue tasks": "overdue",
+  "Today’s tasks": "tasks",
+  "Upcoming assignments": "assignments",
+  "Upcoming exams": "exams",
+  "Today’s workout": "workout",
+  "Small habits. Big impact.": "habits",
+  "Weight trend": "fitness",
+  "On the horizon": "dates",
+};
 function Card({
   title,
   subtitle,
@@ -124,8 +157,18 @@ function Card({
   children: ReactNode;
   className?: string;
 }) {
+  const preferences = useContext(DashboardContext);
+  const key = CARD_IDS[title];
+  if (preferences && key && preferences.hidden.includes(key)) return null;
   return (
-    <section className={`card ${className}`}>
+    <section
+      className={`card ${className}`}
+      style={
+        preferences && key
+          ? { order: preferences.order.indexOf(key as never) }
+          : undefined
+      }
+    >
       <div className="card-heading">
         <div>
           <h2>{title}</h2>
@@ -143,9 +186,38 @@ function Empty({ children }: { children: ReactNode }) {
 export default function App() {
   const dialogRef = useRef<HTMLElement>(null);
   const [initial] = useState(load);
+  const revisionRef = useRef<string | null>(null);
+  const [conflict, setConflict] = useState(false);
+  const [otherTabs, setOtherTabs] = useState(0);
+  const [editLogDate, setEditLogDate] = useState<string | null>(null);
+  const [editWorkoutId, setEditWorkoutId] = useState<string | null>(null);
+  const [backupDismissed, setBackupDismissed] = useState(() => {
+    try {
+      return Number(localStorage.getItem(REMINDER_KEY) || 0);
+    } catch {
+      return 0;
+    }
+  });
+  const [exportStatus, setExportStatus] = useState<ExportStatus | null>(() => {
+    try {
+      return parseExportStatus(localStorage.getItem(EXPORT_STATUS_KEY));
+    } catch {
+      return null;
+    }
+  });
   const [loadError, setLoadError] = useState(initial.error);
   const [undo, setUndo] = useState<Deletion | null>(null);
   const [data, setData] = useState<State>(initial.data);
+  const [baseline] = useState(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  });
+  useEffect(() => {
+    revisionRef.current = baseline;
+  }, [baseline]);
   const [editHabit, setEditHabit] = useState<number | null>(null);
   const [editDate, setEditDate] = useState<number | null>(null);
   const [habitDate, setHabitDate] = useState(day());
@@ -167,6 +239,7 @@ export default function App() {
     | "quick"
     | "habit"
     | "habitCompletion"
+    | "dashboard"
     | "date"
     | null
   >(null);
@@ -228,11 +301,16 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
   document.documentElement.dataset.theme = theme;
-  function update(next: State, reason?: string, recovery = false): boolean {
+  async function update(
+    next: State,
+    reason?: string,
+    recovery = false,
+  ): Promise<boolean> {
     if (loadError && !recovery) {
       setNotice(loadError);
       return false;
     }
+    const expected = revisionRef.current;
     try {
       const editing =
         (modal === "task" && editTask) ||
@@ -240,38 +318,42 @@ export default function App() {
         (modal === "assignment" && editAssignment) ||
         (modal === "habit" && editHabit !== null) ||
         (modal === "date" && editDate !== null) ||
+        (modal === "workout" && editWorkoutId) ||
         (modal === "weight" &&
           data.weights.some((w) => w.date === next.weights.at(-1)?.date)) ||
         (modal === "nutrition" &&
           data.nutrition.some((n) => n.date === next.nutrition.at(-1)?.date));
-      const saved = persist(
+      const saved = await coordinatedWrite(
         localStorage,
         data,
         next,
+        expected,
         reason || (editing ? `Before editing ${modal}` : undefined),
       );
+      revisionRef.current = JSON.stringify(saved);
       setData(saved);
       setLoadError("");
       setNotice("");
       return true;
     } catch (e) {
+      if (localStorage.getItem(STORAGE_KEY) !== expected) setConflict(true);
       setNotice(`Nothing was changed: ${(e as Error).message}`);
       return false;
     }
   }
-  function deleteRecords(next: State, label: string) {
+  async function deleteRecords(next: State, label: string) {
     const entry = deletion(data, next, label);
-    if (update(next, `Before deleting ${label}`)) {
+    if (await update(next, `Before deleting ${label}`)) {
       setUndo(entry);
       closeModal();
       setCourseId(null);
     }
   }
-  function undoLast() {
+  async function undoLast() {
     if (!undo) return;
     try {
       const next = undoDeletion(data, undo);
-      if (update(next, `Before undoing ${undo.label}`)) setUndo(null);
+      if (await update(next, `Before undoing ${undo.label}`)) setUndo(null);
     } catch (e) {
       setNotice((e as Error).message);
     }
@@ -284,14 +366,87 @@ export default function App() {
     );
     return () => clearTimeout(timer);
   }, [undo]);
+  useEffect(() => {
+    function changed(e: StorageEvent) {
+      if (e.key === STORAGE_KEY || e.key === null) {
+        if (localStorage.getItem(STORAGE_KEY) !== revisionRef.current)
+          setConflict(true);
+      }
+      if (e.key === EXPORT_STATUS_KEY) {
+        try {
+          setExportStatus(parseExportStatus(e.newValue));
+        } catch {}
+      }
+    }
+    window.addEventListener("storage", changed);
+    let channel: BroadcastChannel | undefined;
+    const peers = new Map<string, number>();
+    const id = crypto.randomUUID();
+    if (typeof BroadcastChannel !== "undefined") {
+      channel = new BroadcastChannel("dylan-os-presence");
+      channel.onmessage = (e) => {
+        if (e.data?.id === id) return;
+        if (e.data?.type === "leave") peers.delete(e.data.id);
+        else if (e.data?.type === "presence") {
+          peers.set(e.data.id, Date.now());
+          if (e.data.hello) channel?.postMessage({ id, type: "presence" });
+        }
+        setOtherTabs(peers.size);
+      };
+      channel.postMessage({ id, type: "presence", hello: true });
+    }
+    const timer = setInterval(() => {
+      for (const [peer, last] of peers)
+        if (Date.now() - last > 15000) peers.delete(peer);
+      setOtherTabs(peers.size);
+      channel?.postMessage({ id, type: "presence" });
+    }, 5000);
+    return () => {
+      window.removeEventListener("storage", changed);
+      clearInterval(timer);
+      channel?.postMessage({ id, type: "leave" });
+      channel?.close();
+    };
+  }, []);
+  function reloadLatest() {
+    if (
+      (modal || courseId) &&
+      !window.confirm(
+        "Reload the latest workspace? Unsaved form text or course notes will be discarded.",
+      )
+    )
+      return;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      setData(restoreWorkspace(raw));
+      revisionRef.current = raw;
+      setLoadError("");
+      setConflict(false);
+      setNotice("");
+      setUndo(null);
+      closeModal();
+      setCourseId(null);
+      setMessages([]);
+    } catch {
+      setNotice(
+        "Latest saved data could not be loaded. Use Data & Backup for recovery.",
+      );
+    }
+  }
   function navigate(next: Page) {
     setPage(next);
     setCourseId(null);
     setMenu(false);
   }
   const todayTasks = data.tasks.filter((t) => t.due === day() && !t.completed);
-  const priorities = dueTasks(data);
-  const overdueTasks = priorities.filter((t) => t.due < day());
+  const dashboard = dashboardPreferences(data);
+  const selectedPriorities = dashboard.priorities
+    .map((id) => data.tasks.find((t) => t.id === id && !t.completed))
+    .filter((t): t is Task => !!t);
+  const priorities = selectedPriorities.length
+    ? selectedPriorities
+    : dueTasks(data);
+  const overdueTasks = dueTasks(data).filter((t) => t.due < day());
   const deadlines = [...data.assignments]
     .filter((a) => !a.completed)
     .sort((a, b) => a.due.localeCompare(b.due));
@@ -314,7 +469,8 @@ export default function App() {
   };
   const todaysWorkout = data.workouts.filter((w) => w.date === day());
   const completedWorkouts = data.workouts.filter((w) => w.completed);
-  const habitsDone = data.habits.filter((h) => h.dates.includes(day())).length;
+  const scheduledHabits = data.habits.filter((h) => scheduled(h));
+  const habitsDone = scheduledHabits.filter((h) => habitComplete(h)).length;
   const selectedCourse = data.courses.find((c) => c.id === courseId);
   const bench = completedWorkouts
     .filter((w) => w.exercise.toLowerCase().includes("bench"))
@@ -427,7 +583,7 @@ export default function App() {
       setBusy(false);
     }
   }
-  function saveForm(e: FormEvent<HTMLFormElement>) {
+  async function saveForm(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     const value = (k: string) => String(f.get(k) || "");
@@ -445,12 +601,15 @@ export default function App() {
         completedOn: editTask?.completedOn,
       };
       if (!t.name) return;
-      update({
-        ...data,
-        tasks: editTask
-          ? data.tasks.map((x) => (x.id === t.id ? t : x))
-          : [...data.tasks, t],
-      });
+      if (
+        !(await update({
+          ...data,
+          tasks: editTask
+            ? data.tasks.map((x) => (x.id === t.id ? t : x))
+            : [...data.tasks, t],
+        }))
+      )
+        return;
     }
     if (modal === "course") {
       const c = {
@@ -463,12 +622,15 @@ export default function App() {
         notes: value("notes"),
       };
       if (!c.name) return;
-      update({
-        ...data,
-        courses: selectedCourse
-          ? data.courses.map((x) => (x.id === c.id ? c : x))
-          : [...data.courses, c],
-      });
+      if (
+        !(await update({
+          ...data,
+          courses: selectedCourse
+            ? data.courses.map((x) => (x.id === c.id ? c : x))
+            : [...data.courses, c],
+        }))
+      )
+        return;
     }
     if (modal === "assignment") {
       const a: Assignment = {
@@ -484,24 +646,35 @@ export default function App() {
         notes: value("notes"),
       };
       if (!a.name || !data.courses.some((c) => c.id === a.courseId)) return;
-      update({
-        ...data,
-        assignments: editAssignment
-          ? data.assignments.map((x) => (x.id === a.id ? a : x))
-          : [...data.assignments, a],
-      });
+      if (
+        !(await update({
+          ...data,
+          assignments: editAssignment
+            ? data.assignments.map((x) => (x.id === a.id ? a : x))
+            : [...data.assignments, a],
+        }))
+      )
+        return;
     }
     if (modal === "weight") {
       const entry = {
-        ...data.weights.find((w) => w.date === value("date")),
+        ...data.weights.find((w) => w.date === (editLogDate ?? value("date"))),
         date: value("date"),
         value: number("weight"),
       };
-      update({
-        ...data,
-        weights: [...data.weights.filter((w) => w.date !== entry.date), entry],
-        goalWeight: value("goal") === "" ? null : number("goal"),
-      });
+      if (
+        !(await update({
+          ...data,
+          weights: [
+            ...data.weights.filter(
+              (w) => w.date !== (editLogDate ?? entry.date),
+            ),
+            entry,
+          ],
+          goalWeight: value("goal") === "" ? null : number("goal"),
+        }))
+      )
+        return;
     }
     if (modal === "workout") {
       if (!value("name").trim() || !value("exercise").trim()) {
@@ -514,37 +687,63 @@ export default function App() {
         );
         return;
       }
-      update({
-        ...data,
-        workouts: [
-          ...data.workouts,
-          {
-            id: uid(),
-            date: value("date"),
-            name: value("name").trim(),
-            exercise: value("exercise").trim(),
-            weight: number("weight"),
-            reps: number("reps"),
-            completed: value("status") === "Completed",
-          },
-        ],
-      });
+      if (
+        !(await update({
+          ...data,
+          workouts: editWorkoutId
+            ? data.workouts.map((w) =>
+                w.id === editWorkoutId
+                  ? {
+                      ...w,
+                      date: value("date"),
+                      name: value("name").trim(),
+                      exercise: value("exercise").trim(),
+                      weight: number("weight"),
+                      reps: number("reps"),
+                      sets: number("sets"),
+                      completed: value("status") === "Completed",
+                    }
+                  : w,
+              )
+            : [
+                ...data.workouts,
+                {
+                  id: uid(),
+                  date: value("date"),
+                  name: value("name").trim(),
+                  exercise: value("exercise").trim(),
+                  weight: number("weight"),
+                  reps: number("reps"),
+                  sets: number("sets"),
+                  completed: value("status") === "Completed",
+                },
+              ],
+        }))
+      )
+        return;
     }
     if (modal === "nutrition") {
       const entry = {
-        ...data.nutrition.find((n) => n.date === value("date")),
+        ...data.nutrition.find(
+          (n) => n.date === (editLogDate ?? value("date")),
+        ),
         date: value("date"),
         calories: number("calories"),
         protein: number("protein"),
         steps: number("steps"),
       };
-      update({
-        ...data,
-        nutrition: [
-          ...data.nutrition.filter((n) => n.date !== entry.date),
-          entry,
-        ],
-      });
+      if (
+        !(await update({
+          ...data,
+          nutrition: [
+            ...data.nutrition.filter(
+              (n) => n.date !== (editLogDate ?? entry.date),
+            ),
+            entry,
+          ],
+        }))
+      )
+        return;
     }
     if (modal === "habit") {
       const name = value("name").trim();
@@ -558,17 +757,31 @@ export default function App() {
         setFormError("That habit already exists.");
         return;
       }
+      const days = f.getAll("schedule").map(Number);
+      if (!days.length) {
+        setFormError("Choose at least one scheduled day.");
+        return;
+      }
       const habit =
         editHabit === null
-          ? { name, dates: [], createdOn: day() }
-          : { ...data.habits[editHabit], name };
-      update({
-        ...data,
-        habits:
-          editHabit === null
-            ? [...data.habits, habit]
-            : data.habits.map((h, i) => (i === editHabit ? habit : h)),
-      });
+          ? {
+              name,
+              dates: [],
+              createdOn: day(),
+              target: number("target"),
+              schedule: days,
+            }
+          : editHabitPlan(data.habits[editHabit], name, number("target"), days);
+      if (
+        !(await update({
+          ...data,
+          habits:
+            editHabit === null
+              ? [...data.habits, habit]
+              : data.habits.map((h, i) => (i === editHabit ? habit : h)),
+        }))
+      )
+        return;
     }
     if (modal === "date") {
       const date = {
@@ -577,13 +790,16 @@ export default function App() {
         date: value("date"),
       };
       if (!date.name) return;
-      update({
-        ...data,
-        dates:
-          editDate === null
-            ? [...data.dates, date]
-            : data.dates.map((d, i) => (i === editDate ? date : d)),
-      });
+      if (
+        !(await update({
+          ...data,
+          dates:
+            editDate === null
+              ? [...data.dates, date]
+              : data.dates.map((d, i) => (i === editDate ? date : d)),
+        }))
+      )
+        return;
     }
     if (modal === "course" && pendingSchool) {
       setAssignmentType(pendingSchool);
@@ -598,6 +814,8 @@ export default function App() {
   function closeModal() {
     setModal(null);
     setPendingSchool(null);
+    setEditLogDate(null);
+    setEditWorkoutId(null);
   }
   const addTask = () => {
     setEditTask(null);
@@ -641,6 +859,7 @@ export default function App() {
           {navigation.map((n) => (
             <button
               key={n.name}
+              aria-label={n.name}
               className={`nav-item ${page === n.name || (page === "Weekly Review" && n.name === "Today") ? "active" : ""}`}
               onClick={() => navigate(n.name)}
             >
@@ -720,6 +939,47 @@ export default function App() {
           </div>
         </header>
         <div className="content">
+          {(otherTabs > 0 || conflict) && (
+            <div className="banner" role="status">
+              {conflict
+                ? "This workspace changed in another tab. Your edits are blocked until you reload the latest records."
+                : `Dylan OS is open in ${otherTabs + 1} tabs. Edits are coordinated to prevent overwrites.`}
+              {conflict && (
+                <button className="secondary" onClick={reloadLatest}>
+                  Reload latest workspace
+                </button>
+              )}
+            </div>
+          )}
+          {backupReminder(exportStatus, backupDismissed) && (
+            <div className="backup-nudge">
+              <span>
+                {exportStatus?.confirmedAt
+                  ? "Your weekly external backup is overdue."
+                  : "Keep a JSON backup outside this browser."}
+              </span>
+              <button
+                className="subtle-link"
+                onClick={() => navigate("Data & Backup")}
+              >
+                Review backup
+              </button>
+              <button
+                className="subtle-link"
+                onClick={() => {
+                  const until = Date.now() + 86400000;
+                  try {
+                    localStorage.setItem(REMINDER_KEY, String(until));
+                    setBackupDismissed(until);
+                  } catch {
+                    setNotice("Reminder dismissal could not be saved.");
+                  }
+                }}
+              >
+                Dismiss for today
+              </button>
+            </div>
+          )}
           {notice && (
             <div role="alert" className="banner">
               {notice}
@@ -747,6 +1007,12 @@ export default function App() {
                 <div className="heading-actions">
                   <button
                     className="secondary"
+                    onClick={() => setModal("dashboard")}
+                  >
+                    Customize Today
+                  </button>
+                  <button
+                    className="secondary"
                     onClick={() => setPage("Weekly Review")}
                   >
                     Weekly review
@@ -771,6 +1037,17 @@ export default function App() {
                   className="focus-art"
                   aria-hidden="true"
                 />
+              </div>
+              <div className="daily-overview">
+                <span>
+                  {upcomingAssignments.length} assignments ·{" "}
+                  {upcomingExams.length} exams approaching
+                </span>
+                <span>
+                  {todaysWorkout.reduce((total, w) => total + (w.sets ?? 1), 0)}{" "}
+                  workout sets today
+                </span>
+                <span>{scheduledHabits.length} habits scheduled</span>
               </div>
               <div className="stat-grid">
                 <div className="stat">
@@ -825,323 +1102,374 @@ export default function App() {
                   </span>
                   <strong>
                     {habitsDone}
-                    <small>/ {data.habits.length}</small>
+                    <small>/ {scheduledHabits.length}</small>
                   </strong>
                   <p>Your small wins add up</p>
                 </div>
               </div>
-              <div className="today-grid">
-                <div className="column">
-                  <Card
-                    title="Needs your attention"
-                    subtitle="Overdue first, then today’s tasks by priority."
-                    action={<span className="pill">FOCUS</span>}
-                  >
-                    <div className="priorities">
-                      {priorities.slice(0, 3).map((t, i) => (
-                        <div className="priority-row" key={t.id}>
-                          <span className="priority-number">0{i + 1}</span>
-                          <div>
-                            <strong>{t.name}</strong>
-                            <p>
-                              {t.category} · {formatDate(t.due)}{" "}
-                              <Urgency due={t.due} />
-                            </p>
+              <DashboardContext.Provider value={dashboard}>
+                <div
+                  className={`today-grid ${data.preferences?.dashboard?.order ? "personalized-grid" : ""}`}
+                >
+                  <div className="column">
+                    <Card
+                      title="Needs your attention"
+                      subtitle={
+                        selectedPriorities.length
+                          ? "Your chosen focus for today."
+                          : "Overdue first, then today’s tasks by priority."
+                      }
+                      action={<span className="pill">FOCUS</span>}
+                    >
+                      <div className="priorities">
+                        {priorities.slice(0, 3).map((t, i) => (
+                          <div className="priority-row" key={t.id}>
+                            <span className="priority-number">0{i + 1}</span>
+                            <div>
+                              <strong>{t.name}</strong>
+                              <p>
+                                {t.category} · {formatDate(t.due)}{" "}
+                                <Urgency due={t.due} />
+                              </p>
+                            </div>
+                            <button
+                              className="icon-button"
+                              aria-label={`Complete ${t.name}`}
+                              onClick={() => update(toggleTask(data, t.id))}
+                            >
+                              <ArrowUpRight size={17} />
+                            </button>
                           </div>
+                        ))}
+                        {!priorities.length && (
+                          <Empty>
+                            No tasks due or overdue. Add your next intention.
+                          </Empty>
+                        )}
+                      </div>
+                    </Card>
+                    {overdueTasks.length > 0 && (
+                      <Card
+                        title="Overdue tasks"
+                        subtitle="Still open. Complete or reschedule these first."
+                      >
+                        {overdueTasks.map(taskRow)}
+                      </Card>
+                    )}
+                    <Card
+                      title="Today’s tasks"
+                      action={
+                        <button
+                          className="subtle-link"
+                          onClick={() => navigate("Tasks")}
+                        >
+                          View all <ArrowUpRight size={14} />
+                        </button>
+                      }
+                    >
+                      {data.tasks.filter((t) => t.due === day()).map(taskRow)}
+                      {!data.tasks.some((t) => t.due === day()) && (
+                        <Empty>Your day is open. Add your first task.</Empty>
+                      )}
+                      <button className="add-inline" onClick={addTask}>
+                        <Plus size={15} /> Add a task
+                      </button>
+                    </Card>
+                    <Card
+                      title="Upcoming assignments"
+                      subtitle="Next 14 days, plus overdue assignments."
+                      action={
+                        <button
+                          className="subtle-link"
+                          onClick={() => navigate("College")}
+                        >
+                          View all <ArrowUpRight size={14} />
+                        </button>
+                      }
+                    >
+                      {upcomingAssignments.map(assignmentRow)}
+                      {!deadlines.length && (
+                        <Empty>No pending assignments.</Empty>
+                      )}
+                    </Card>
+                    <Card
+                      title="Upcoming exams"
+                      subtitle="Next 14 days, plus overdue exams."
+                      action={
+                        <button
+                          className="subtle-link"
+                          onClick={() => addAssignment("Exam")}
+                        >
+                          <Plus size={14} /> Exam
+                        </button>
+                      }
+                    >
+                      {upcomingExams.map(assignmentRow)}
+                      {!upcomingExams.length && (
+                        <Empty>No exams due in the next 14 days.</Empty>
+                      )}
+                    </Card>
+                  </div>
+                  <div className="column">
+                    <Card
+                      title="Today’s workout"
+                      action={<Dumbbell size={19} className="muted" />}
+                    >
+                      {todaysWorkout.map((w) => (
+                        <div key={w.id} className="workout-preview">
+                          <span className="pill">STRENGTH</span>
+                          <h3>{w.name}</h3>
+                          <p>
+                            {w.exercise} · {w.sets ?? 1} × {w.weight} lb ×{" "}
+                            {w.reps} reps
+                          </p>
                           <button
-                            className="icon-button"
-                            aria-label={`Complete ${t.name}`}
-                            onClick={() => update(toggleTask(data, t.id))}
+                            className={w.completed ? "secondary" : "primary"}
+                            onClick={() =>
+                              update({
+                                ...data,
+                                workouts: data.workouts.map((x) =>
+                                  x.id === w.id
+                                    ? { ...x, completed: !x.completed }
+                                    : x,
+                                ),
+                              })
+                            }
                           >
-                            <ArrowUpRight size={17} />
+                            {w.completed ? (
+                              <>
+                                <Check size={15} /> Completed
+                              </>
+                            ) : (
+                              <>
+                                Complete workout <ArrowUpRight size={15} />
+                              </>
+                            )}
                           </button>
                         </div>
                       ))}
-                      {!priorities.length && (
-                        <Empty>
-                          No tasks due or overdue. Add your next intention.
-                        </Empty>
+                      {!todaysWorkout.length && (
+                        <>
+                          <Empty>Rest or train — make it intentional.</Empty>
+                          <button
+                            className="secondary"
+                            onClick={() => setModal("workout")}
+                          >
+                            Log a workout
+                          </button>
+                        </>
                       )}
-                    </div>
-                  </Card>
-                  {overdueTasks.length > 0 && (
-                    <Card
-                      title="Overdue tasks"
-                      subtitle="Still open. Complete or reschedule these first."
-                    >
-                      {overdueTasks.map(taskRow)}
                     </Card>
-                  )}
-                  <Card
-                    title="Today’s tasks"
-                    action={
-                      <button
-                        className="subtle-link"
-                        onClick={() => navigate("Tasks")}
-                      >
-                        View all <ArrowUpRight size={14} />
-                      </button>
-                    }
-                  >
-                    {data.tasks.filter((t) => t.due === day()).map(taskRow)}
-                    {!data.tasks.some((t) => t.due === day()) && (
-                      <Empty>Your day is open. Add your first task.</Empty>
-                    )}
-                    <button className="add-inline" onClick={addTask}>
-                      <Plus size={15} /> Add a task
-                    </button>
-                  </Card>
-                  <Card
-                    title="Upcoming assignments"
-                    subtitle="Next 14 days, plus overdue assignments."
-                    action={
-                      <button
-                        className="subtle-link"
-                        onClick={() => navigate("College")}
-                      >
-                        View all <ArrowUpRight size={14} />
-                      </button>
-                    }
-                  >
-                    {upcomingAssignments.map(assignmentRow)}
-                    {!deadlines.length && (
-                      <Empty>No pending assignments.</Empty>
-                    )}
-                  </Card>
-                  <Card
-                    title="Upcoming exams"
-                    subtitle="Next 14 days, plus overdue exams."
-                    action={
-                      <button
-                        className="subtle-link"
-                        onClick={() => addAssignment("Exam")}
-                      >
-                        <Plus size={14} /> Exam
-                      </button>
-                    }
-                  >
-                    {upcomingExams.map(assignmentRow)}
-                    {!upcomingExams.length && (
-                      <Empty>No exams due in the next 14 days.</Empty>
-                    )}
-                  </Card>
-                </div>
-                <div className="column">
-                  <Card
-                    title="Today’s workout"
-                    action={<Dumbbell size={19} className="muted" />}
-                  >
-                    {todaysWorkout.map((w) => (
-                      <div key={w.id} className="workout-preview">
-                        <span className="pill">STRENGTH</span>
-                        <h3>{w.name}</h3>
-                        <p>
-                          {w.exercise} · {w.weight} lb × {w.reps} reps
-                        </p>
-                        <button
-                          className={w.completed ? "secondary" : "primary"}
-                          onClick={() =>
-                            update({
-                              ...data,
-                              workouts: data.workouts.map((x) =>
-                                x.id === w.id
-                                  ? { ...x, completed: !x.completed }
-                                  : x,
-                              ),
-                            })
-                          }
-                        >
-                          {w.completed ? (
-                            <>
-                              <Check size={15} /> Completed
-                            </>
-                          ) : (
-                            <>
-                              Complete workout <ArrowUpRight size={15} />
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    ))}
-                    {!todaysWorkout.length && (
-                      <>
-                        <Empty>Rest or train — make it intentional.</Empty>
-                        <button
-                          className="secondary"
-                          onClick={() => setModal("workout")}
-                        >
-                          Log a workout
-                        </button>
-                      </>
-                    )}
-                  </Card>
-                  <Card
-                    title="Small habits. Big impact."
-                    subtitle="A little consistency goes a long way."
-                    action={
-                      <button
-                        className="subtle-link"
-                        onClick={() => {
-                          setEditHabit(null);
-                          setModal("habit");
-                        }}
-                      >
-                        <Plus size={14} /> Habit
-                      </button>
-                    }
-                  >
-                    {data.habits.map((h, i) => (
-                      <div className="habit-row" key={h.name}>
-                        <button
-                          className={`checkbox ${h.dates.includes(day()) ? "checked" : ""}`}
-                          aria-label={`Toggle ${h.name}`}
-                          onClick={() => update(toggleHabit(data, i))}
-                        >
-                          {h.dates.includes(day()) && <Check size={13} />}
-                        </button>
-                        <button
-                          className="text-button"
-                          onClick={() => {
-                            setEditHabit(i);
-                            setModal("habit");
-                          }}
-                        >
-                          {h.name}
-                        </button>
-                      </div>
-                    ))}
-                    <div className="progress-track">
-                      <div
-                        style={{
-                          width: `${(habitsDone / (data.habits.length || 1)) * 100}%`,
-                        }}
-                      />
-                    </div>
-                    <div className="progress-caption">
-                      {habitsDone} of {data.habits.length} habits complete{" "}
-                      <span>
-                        {Math.round(
-                          (habitsDone / (data.habits.length || 1)) * 100,
-                        )}
-                        %
-                      </span>
-                    </div>
-                  </Card>
-                  <Card
-                    title="Weight trend"
-                    action={
-                      <button
-                        className="subtle-link"
-                        onClick={() => setModal("weight")}
-                      >
-                        Log weight
-                      </button>
-                    }
-                  >
-                    <div className="mini-stat">
-                      <strong>
-                        {avg ? avg.toFixed(1) : "—"} <small>lb</small>
-                      </strong>
-                      <span>7-day average</span>
-                    </div>
-                    {weightChart()}
-                    <div className="important-date">
-                      <span>Goal weight</span>
-                      <strong>
-                        {data.goalWeight === null
-                          ? "Not set"
-                          : `${data.goalWeight} lb`}
-                      </strong>
-                    </div>
-                    <div className="important-date">
-                      <span>Today’s steps</span>
-                      <strong>
-                        {data.nutrition.some((n) => n.date === day())
-                          ? nutrition.steps.toLocaleString()
-                          : "Not logged"}
-                      </strong>
-                    </div>
-                    <div className="important-date">
-                      <span>Workouts · last 7 days</span>
-                      <strong>
-                        {sessionCount(
-                          completedWorkouts.filter(
-                            (w) => w.date >= day(-6) && w.date <= day(),
-                          ),
-                        )}
-                      </strong>
-                    </div>
-                  </Card>
-                  <Card
-                    title="On the horizon"
-                    action={
-                      <button
-                        className="subtle-link"
-                        onClick={() => {
-                          setEditDate(null);
-                          setModal("date");
-                        }}
-                      >
-                        <Plus size={14} /> Date
-                      </button>
-                    }
-                  >
-                    {data.dates
-                      .map((d, i) => ({ ...d, index: i }))
-                      .filter((d) => d.date >= day())
-                      .sort((a, b) => a.date.localeCompare(b.date))
-                      .map((d) => (
-                        <div className="important-date" key={d.index}>
+                    <Card
+                      title="Small habits. Big impact."
+                      subtitle="A little consistency goes a long way."
+                      action={
+                        <div className="heading-actions">
+                          <button
+                            className="subtle-link"
+                            onClick={() => navigate("Habits")}
+                          >
+                            History
+                          </button>
+                          <button
+                            className="subtle-link"
+                            onClick={() => {
+                              setEditHabit(null);
+                              setModal("habit");
+                            }}
+                          >
+                            <Plus size={14} /> Habit
+                          </button>
+                        </div>
+                      }
+                    >
+                      {data.habits.map((h, i) => (
+                        <div className="habit-row" key={h.name}>
+                          <button
+                            className={`checkbox ${habitComplete(h) ? "checked" : ""}`}
+                            aria-label={`Toggle ${h.name}`}
+                            disabled={!scheduled(h)}
+                            onClick={() => update(toggleHabit(data, i))}
+                          >
+                            {habitComplete(h) && <Check size={13} />}
+                          </button>
                           <button
                             className="text-button"
                             onClick={() => {
-                              setEditDate(d.index);
-                              setModal("date");
+                              setEditHabit(i);
+                              setModal("habit");
                             }}
                           >
-                            {d.name}
+                            {h.name}
                           </button>
-                          <strong>
-                            {formatDate(d.date)} <Urgency due={d.date} />
-                          </strong>
+                          <span className="row-meta">
+                            {scheduled(h)
+                              ? `${habitCount(h)}/${habitPlan(h, day()).target} · ${habitStreak(h)} day streak · ${habitWeek(h).percent ?? 0}% this week`
+                              : "Rest day"}
+                          </span>
+                          {scheduled(h) && (
+                            <button
+                              className="subtle-link"
+                              aria-label={`Add progress ${h.name}`}
+                              onClick={() =>
+                                update(
+                                  setHabitCount(
+                                    data,
+                                    i,
+                                    Math.min(100, habitCount(h) + 1),
+                                  ),
+                                )
+                              }
+                            >
+                              +1
+                            </button>
+                          )}
                         </div>
                       ))}
-                    {!data.dates.some((d) => d.date >= day()) && (
-                      <Empty>
-                        Add a birthday, break, or important deadline.
-                      </Empty>
-                    )}
-                  </Card>
+                      <div className="progress-track">
+                        <div
+                          style={{
+                            width: `${(habitsDone / (scheduledHabits.length || 1)) * 100}%`,
+                          }}
+                        />
+                      </div>
+                      <div className="progress-caption">
+                        {habitsDone} of {scheduledHabits.length} scheduled
+                        habits complete{" "}
+                        <span>
+                          {Math.round(
+                            (habitsDone / (scheduledHabits.length || 1)) * 100,
+                          )}
+                          %
+                        </span>
+                      </div>
+                    </Card>
+                    <Card
+                      title="Weight trend"
+                      action={
+                        <button
+                          className="subtle-link"
+                          onClick={() => setModal("weight")}
+                        >
+                          Log weight
+                        </button>
+                      }
+                    >
+                      <div className="mini-stat">
+                        <strong>
+                          {avg ? avg.toFixed(1) : "—"} <small>lb</small>
+                        </strong>
+                        <span>7-day average</span>
+                      </div>
+                      {weightChart()}
+                      <div className="important-date">
+                        <span>Goal weight</span>
+                        <strong>
+                          {data.goalWeight === null
+                            ? "Not set"
+                            : `${data.goalWeight} lb`}
+                        </strong>
+                      </div>
+                      <div className="important-date">
+                        <span>Today’s steps</span>
+                        <strong>
+                          {data.nutrition.some((n) => n.date === day())
+                            ? nutrition.steps.toLocaleString()
+                            : "Not logged"}
+                        </strong>
+                      </div>
+                      <div className="important-date">
+                        <span>Workouts · last 7 days</span>
+                        <strong>
+                          {sessionCount(
+                            completedWorkouts.filter(
+                              (w) => w.date >= day(-6) && w.date <= day(),
+                            ),
+                          )}
+                        </strong>
+                      </div>
+                    </Card>
+                    <Card
+                      title="On the horizon"
+                      action={
+                        <button
+                          className="subtle-link"
+                          onClick={() => {
+                            setEditDate(null);
+                            setModal("date");
+                          }}
+                        >
+                          <Plus size={14} /> Date
+                        </button>
+                      }
+                    >
+                      {data.dates
+                        .map((d, i) => ({ ...d, index: i }))
+                        .filter((d) => d.date >= day())
+                        .sort((a, b) => a.date.localeCompare(b.date))
+                        .map((d) => (
+                          <div className="important-date" key={d.index}>
+                            <button
+                              className="text-button"
+                              onClick={() => {
+                                setEditDate(d.index);
+                                setModal("date");
+                              }}
+                            >
+                              {d.name}
+                            </button>
+                            <strong>
+                              {formatDate(d.date)} <Urgency due={d.date} />
+                            </strong>
+                          </div>
+                        ))}
+                      {!data.dates.some((d) => d.date >= day()) && (
+                        <Empty>
+                          Add a birthday, break, or important deadline.
+                        </Empty>
+                      )}
+                    </Card>
+                  </div>
                 </div>
-              </div>
+              </DashboardContext.Provider>
             </>
+          )}
+          {page === "Habits" && (
+            <HabitHistory
+              data={data}
+              onEdit={(index) => {
+                setEditHabit(index);
+                setModal("habit");
+              }}
+              onToday={() => navigate("Today")}
+            />
           )}
           {page === "Data & Backup" && (
             <DataBackup
               data={data}
               loadError={loadError}
-              onReplace={(next, reason) => {
-                if (update(next, reason, true)) {
+              onReplace={async (next, reason) => {
+                if (await update(next, reason, true)) {
                   setUndo(null);
                   setMessages([]);
                   return true;
                 }
                 return false;
               }}
-              onClear={(phrase) => {
-                try {
-                  const next = clearWorkspace(localStorage, data, phrase);
-                  setData(next);
-                  setLoadError("");
-                  setNotice("");
+              onClear={async (phrase) => {
+                if (phrase !== "CLEAR MY WORKSPACE") return false;
+                const ok = await update(
+                  emptyWorkspace(),
+                  "Before clearing workspace",
+                  true,
+                );
+                if (ok) {
                   setUndo(null);
                   setMessages([]);
-                  return true;
-                } catch (e) {
-                  setNotice(`Nothing was cleared: ${(e as Error).message}`);
-                  return false;
                 }
+                return ok;
               }}
+              onExportChange={setExportStatus}
             />
           )}
           {page === "Weekly Review" && (
@@ -1305,27 +1633,21 @@ export default function App() {
                       </p>
                     </Card>
                     <Card title="Course notes">
-                      <textarea
-                        className="notes"
-                        aria-label="Course notes"
-                        onFocus={() =>
-                          update(data, "Before editing course notes")
-                        }
-                        value={selectedCourse.notes}
-                        onChange={(e) =>
-                          update({
-                            ...data,
-                            courses: data.courses.map((c) =>
-                              c.id === courseId
-                                ? { ...c, notes: e.target.value }
-                                : c,
-                            ),
-                          })
+                      <CourseNotes
+                        key={selectedCourse.id}
+                        notes={selectedCourse.notes}
+                        onSave={(notes) =>
+                          update(
+                            {
+                              ...data,
+                              courses: data.courses.map((c) =>
+                                c.id === courseId ? { ...c, notes } : c,
+                              ),
+                            },
+                            "Before editing course notes",
+                          )
                         }
                       />
-                      <p className="row-meta">
-                        Saved automatically on this device.
-                      </p>
                     </Card>
                   </div>
                 </div>
@@ -1506,7 +1828,7 @@ export default function App() {
                             <td>{w.name}</td>
                             <td>{w.exercise}</td>
                             <td>
-                              {w.weight} lb × {w.reps}
+                              {w.sets ?? 1} × {w.weight} lb × {w.reps}
                             </td>
                             <td>
                               <button
@@ -1533,6 +1855,16 @@ export default function App() {
                             </td>
                             <td>
                               <button
+                                className="secondary"
+                                aria-label={`Edit workout ${w.name}`}
+                                onClick={() => {
+                                  setEditWorkoutId(w.id);
+                                  setModal("workout");
+                                }}
+                              >
+                                Edit
+                              </button>
+                              <button
                                 className="danger text-button"
                                 aria-label={`Delete workout ${w.name}`}
                                 onClick={() =>
@@ -1556,6 +1888,24 @@ export default function App() {
                   </table>
                 </div>
               </Card>
+              <FitnessHistory
+                data={data}
+                onEdit={(kind, date) => {
+                  setEditLogDate(date);
+                  setModal(kind);
+                }}
+                onDelete={(kind, date) =>
+                  deleteRecords(
+                    {
+                      ...data,
+                      [kind]: data[kind].filter((x) => x.date !== date),
+                    },
+                    kind === "weights"
+                      ? "weight entry"
+                      : "nutrition/steps entry",
+                  )
+                }
+              />
             </>
           )}
           {page === "Tasks" && (
@@ -1770,7 +2120,7 @@ export default function App() {
             <span>
               Dylan OS <span>·</span> A little better, every day.
             </span>
-            <span>V1.2 · Your workspace · Stored on this device</span>
+            <span>V1.3 · Your workspace · Stored on this device</span>
           </footer>
         </div>
       </main>
@@ -1801,31 +2151,33 @@ export default function App() {
           >
             <div className="card-heading">
               <h2 id="modal-title">
-                {modal === "quick"
-                  ? "Quick add"
-                  : modal === "habitCompletion"
-                    ? "Habit check-in"
-                    : modal === "habit"
-                      ? "Your daily habit"
-                      : modal === "date"
-                        ? "Important date"
-                        : modal === "task"
-                          ? editTask
-                            ? "Edit task"
-                            : "A new intention"
-                          : modal === "course"
-                            ? selectedCourse
-                              ? "Edit course"
-                              : "Add a course"
-                            : modal === "assignment"
-                              ? editAssignment
-                                ? "Edit assignment"
-                                : "Add an assignment"
-                              : modal === "weight"
-                                ? "Log your weight"
-                                : modal === "nutrition"
-                                  ? "Daily fuel & movement"
-                                  : "Log a workout"}
+                {modal === "dashboard"
+                  ? "Personalize Today"
+                  : modal === "quick"
+                    ? "Quick add"
+                    : modal === "habitCompletion"
+                      ? "Habit check-in"
+                      : modal === "habit"
+                        ? "Your daily habit"
+                        : modal === "date"
+                          ? "Important date"
+                          : modal === "task"
+                            ? editTask
+                              ? "Edit task"
+                              : "A new intention"
+                            : modal === "course"
+                              ? selectedCourse
+                                ? "Edit course"
+                                : "Add a course"
+                              : modal === "assignment"
+                                ? editAssignment
+                                  ? "Edit assignment"
+                                  : "Add an assignment"
+                                : modal === "weight"
+                                  ? "Log your weight"
+                                  : modal === "nutrition"
+                                    ? "Daily fuel & movement"
+                                    : "Log a workout"}
               </h2>
               <button
                 className="icon-button"
@@ -1835,12 +2187,37 @@ export default function App() {
                 <X size={20} />
               </button>
             </div>
+            {conflict && (
+              <div className="banner" role="alert">
+                Another tab changed the workspace. Keep any draft text before
+                reloading.{" "}
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={reloadLatest}
+                >
+                  Reload latest workspace
+                </button>
+              </div>
+            )}
             {formError && (
               <div className="banner" role="alert">
                 {formError}
               </div>
             )}
-            {modal === "quick" ? (
+            {modal === "dashboard" ? (
+              <>
+                <DashboardSettings
+                  data={data}
+                  onChange={(next) => {
+                    update(next, "Before customizing Today");
+                  }}
+                />
+                <button className="primary" onClick={closeModal}>
+                  Done
+                </button>
+              </>
+            ) : modal === "quick" ? (
               <div className="quick-grid">
                 {[
                   { name: "Task", action: addTask },
@@ -1885,15 +2262,38 @@ export default function App() {
                     return (
                       <div className="habit-row" key={h.name}>
                         <button
-                          className={`checkbox ${h.dates.includes(habitDate) ? "checked" : ""}`}
+                          className={`checkbox ${habitComplete(h, habitDate) ? "checked" : ""}`}
                           aria-label={`Toggle ${h.name}`}
+                          disabled={!scheduled(h, habitDate)}
                           onClick={() =>
                             update(toggleHabit(data, i, habitDate))
                           }
                         >
-                          {h.dates.includes(habitDate) && <Check size={13} />}
+                          {habitComplete(h, habitDate) && <Check size={13} />}
                         </button>
-                        <span>{h.name}</span>
+                        <span>
+                          {h.name} ·{" "}
+                          {scheduled(h, habitDate)
+                            ? `${habitCount(h, habitDate)}/${habitPlan(h, habitDate).target}`
+                            : "Rest day"}
+                        </span>
+                        <button
+                          className="secondary"
+                          disabled={!scheduled(h, habitDate)}
+                          aria-label={`Add check-in ${h.name}`}
+                          onClick={() =>
+                            update(
+                              setHabitCount(
+                                data,
+                                i,
+                                Math.min(100, habitCount(h, habitDate) + 1),
+                                habitDate,
+                              ),
+                            )
+                          }
+                        >
+                          +1
+                        </button>
                       </div>
                     );
                   })}
@@ -1927,6 +2327,53 @@ export default function App() {
                       }
                     />
                   </label>
+                )}
+                {modal === "habit" && (
+                  <>
+                    <label>
+                      Daily target
+                      <input
+                        name="target"
+                        type="number"
+                        min="1"
+                        max="100"
+                        required
+                        defaultValue={
+                          editHabit === null
+                            ? 1
+                            : (data.habits[editHabit].target ?? 1)
+                        }
+                      />
+                    </label>
+                    <fieldset className="habit-schedule">
+                      <legend>Scheduled days</legend>
+                      {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(
+                        (name, index) => (
+                          <label key={name}>
+                            <input
+                              name="schedule"
+                              type="checkbox"
+                              value={index}
+                              defaultChecked={
+                                editHabit === null
+                                  ? true
+                                  : (
+                                      data.habits[editHabit].schedule ?? [
+                                        0, 1, 2, 3, 4, 5, 6,
+                                      ]
+                                    ).includes(index)
+                              }
+                            />
+                            {name}
+                          </label>
+                        ),
+                      )}
+                    </fieldset>
+                    <p className="row-meta">
+                      Changes take effect today; earlier history retains its
+                      original schedule.
+                    </p>
+                  </>
                 )}
                 {modal === "date" && (
                   <>
@@ -2138,10 +2585,11 @@ export default function App() {
                       Date
                       <input
                         name="date"
+                        readOnly={editLogDate !== null}
                         type="date"
                         max={day()}
                         required
-                        defaultValue={day()}
+                        defaultValue={editLogDate ?? day()}
                       />
                     </label>
                     <div className="form-grid">
@@ -2154,7 +2602,12 @@ export default function App() {
                           max="1500"
                           step="0.1"
                           required
-                          defaultValue={weight ?? ""}
+                          defaultValue={
+                            data.weights.find((w) => w.date === editLogDate)
+                              ?.value ??
+                            weight ??
+                            ""
+                          }
                         />
                       </label>
                       <label>
@@ -2180,20 +2633,36 @@ export default function App() {
                         required
                         autoFocus
                         placeholder="Upper body strength"
+                        defaultValue={
+                          data.workouts.find((w) => w.id === editWorkoutId)
+                            ?.name
+                        }
                       />
                     </label>
                     <label>
                       Date
                       <input
                         name="date"
+
                         type="date"
                         required
-                        defaultValue={day()}
+                        defaultValue={
+                          data.workouts.find((w) => w.id === editWorkoutId)
+                            ?.date ?? day()
+                        }
                       />
                     </label>
                     <label>
                       Status
-                      <select name="status" defaultValue="Completed">
+                      <select
+                        name="status"
+                        defaultValue={
+                          data.workouts.find((w) => w.id === editWorkoutId)
+                            ?.completed === false
+                            ? "Planned"
+                            : "Completed"
+                        }
+                      >
                         <option>Completed</option>
                         <option>Planned</option>
                       </select>
@@ -2204,6 +2673,10 @@ export default function App() {
                         name="exercise"
                         required
                         placeholder="Bench press"
+                        defaultValue={
+                          data.workouts.find((w) => w.id === editWorkoutId)
+                            ?.exercise
+                        }
                       />
                     </label>
                     <div className="form-grid">
@@ -2213,6 +2686,10 @@ export default function App() {
                           name="weight"
                           type="number"
                           min="0"
+                          defaultValue={
+                            data.workouts.find((w) => w.id === editWorkoutId)
+                              ?.weight
+                          }
                           step="0.5"
                           required
                         />
@@ -2223,14 +2700,32 @@ export default function App() {
                           name="reps"
                           type="number"
                           min="1"
+                          defaultValue={
+                            data.workouts.find((w) => w.id === editWorkoutId)
+                              ?.reps
+                          }
                           max="1000"
                           required
                         />
                       </label>
                     </div>
+                    <label>
+                      Sets
+                      <input
+                        name="sets"
+                        type="number"
+                        min="1"
+                        max="100"
+                        required
+                        defaultValue={
+                          data.workouts.find((w) => w.id === editWorkoutId)
+                            ?.sets ?? 1
+                        }
+                      />
+                    </label>
                     <p className="row-meta">
-                      Logs one working set. Add more entries for additional
-                      sets.
+                      Tracks sets for one exercise. Add more entries for
+                      additional sets.
                     </p>
                   </>
                 )}
@@ -2240,10 +2735,11 @@ export default function App() {
                       Date
                       <input
                         name="date"
+                        readOnly={editLogDate !== null}
                         type="date"
                         required
                         max={day()}
-                        defaultValue={day()}
+                        defaultValue={editLogDate ?? day()}
                       />
                     </label>
                     <label>
@@ -2254,7 +2750,10 @@ export default function App() {
                         min="0"
                         max="20000"
                         required
-                        defaultValue={nutrition.calories}
+                        defaultValue={
+                          data.nutrition.find((n) => n.date === editLogDate)
+                            ?.calories ?? nutrition.calories
+                        }
                       />
                     </label>
                     <label>
@@ -2265,7 +2764,10 @@ export default function App() {
                         min="0"
                         max="2000"
                         required
-                        defaultValue={nutrition.protein}
+                        defaultValue={
+                          data.nutrition.find((n) => n.date === editLogDate)
+                            ?.protein ?? nutrition.protein
+                        }
                       />
                     </label>
                     <label>
@@ -2276,7 +2778,10 @@ export default function App() {
                         min="0"
                         max="200000"
                         required
-                        defaultValue={nutrition.steps}
+                        defaultValue={
+                          data.nutrition.find((n) => n.date === editLogDate)
+                            ?.steps ?? nutrition.steps
+                        }
                       />
                     </label>
                   </>

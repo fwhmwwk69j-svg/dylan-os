@@ -1,3 +1,4 @@
+import { habitWeek, habitComplete, setHabitCount, habitPlan } from "./daily";
 import { validateWorkspace, emptyWorkspace } from "./safety";
 import { day, localDate } from "./dates";
 import type { State, Task, Assignment } from "./data";
@@ -54,19 +55,14 @@ export function toggleAssignment(
   };
 }
 export function toggleHabit(state: State, index: number, date = day()): State {
-  return {
-    ...state,
-    habits: state.habits.map((h, i) =>
-      i === index
-        ? {
-            ...h,
-            dates: h.dates.includes(date)
-              ? h.dates.filter((d) => d !== date)
-              : [...h.dates, date],
-          }
-        : h,
-    ),
-  };
+  return setHabitCount(
+    state,
+    index,
+    habitComplete(state.habits[index], date)
+      ? 0
+      : habitPlan(state.habits[index], date).target,
+    date,
+  );
 }
 export function removeCourse(state: State, id: string): State {
   return {
@@ -90,13 +86,9 @@ export function weeklyReview(state: State, end = day()) {
   let habitPossible = 0,
     habitCompleted = 0;
   for (const habit of state.habits) {
-    for (let i = 0; i < 7; i++) {
-      const date = offsetDate(start, i);
-      if (!habit.createdOn || date >= habit.createdOn) {
-        habitPossible++;
-        if (habit.dates.includes(date)) habitCompleted++;
-      }
-    }
+    const week = habitWeek(habit, end);
+    habitPossible += week.possible;
+    habitCompleted += week.complete;
   }
   return {
     start,

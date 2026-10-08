@@ -1,4 +1,10 @@
-import { useState } from "react";
+import { parseExportStatus } from "./daily";
+import { useState, useRef } from "react";
+import {
+  EXPORT_STATUS_KEY,
+  workspaceContent,
+  type ExportStatus,
+} from "./daily";
 import type { State } from "./data";
 import {
   exportWorkspace,
@@ -27,12 +33,16 @@ export default function DataBackup({
   loadError,
   onReplace,
   onClear,
+  onExportChange,
 }: {
   data: State;
   loadError: string;
-  onReplace: (next: State, reason: string) => boolean;
-  onClear: (confirmation: string) => boolean;
+  onReplace: (next: State, reason: string) => Promise<boolean>;
+  onClear: (confirmation: string) => Promise<boolean>;
+  onExportChange: (status: ExportStatus) => void;
 }) {
+  const importSequence = useRef(0);
+  const [confirmationPending, setConfirmationPending] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState<{
@@ -46,13 +56,16 @@ export default function DataBackup({
   let history: Snapshot[] = [];
   let storageError = "";
   let lastExport: string | null = null;
+  let status: ExportStatus | null = null;
   try {
     history = snapshots(localStorage);
     lastExport = localStorage.getItem(EXPORT_KEY);
+    status = parseExportStatus(localStorage.getItem(EXPORT_STATUS_KEY));
   } catch (e) {
     storageError = (e as Error).message;
   }
   async function importFile(file?: File) {
+    const sequence = ++importSequence.current;
     setError("");
     setMessage("");
     setPreview(null);
@@ -62,10 +75,12 @@ export default function DataBackup({
       if (file.size > MAX_IMPORT_BYTES)
         throw new Error("Backup exceeds the 5 MB import limit.");
       const state = parseImport(await file.text());
+      if (sequence !== importSequence.current) return;
       setPreview({ state, source: `Import ${file.name}` });
       setClear(false);
     } catch (e) {
-      setError(`Import rejected: ${(e as Error).message}`);
+      if (sequence === importSequence.current)
+        setError(`Import rejected: ${(e as Error).message}`);
     }
   }
   function exportFile() {
@@ -79,6 +94,13 @@ export default function DataBackup({
       );
       try {
         localStorage.setItem(EXPORT_KEY, now.toISOString());
+        const metadata: ExportStatus = {
+          requestedAt: now.toISOString(),
+          content: workspaceContent(data),
+        };
+        localStorage.setItem(EXPORT_STATUS_KEY, JSON.stringify(metadata));
+        onExportChange(metadata);
+        setConfirmationPending(true);
       } catch {
         setError("Download started, but its timestamp could not be saved.");
       }
@@ -91,6 +113,7 @@ export default function DataBackup({
     }
   }
   function viewSnapshot(snapshot: Snapshot) {
+    importSequence.current++;
     setError("");
     setMessage("");
     setPreview(null);
@@ -188,7 +211,7 @@ export default function DataBackup({
             />
           </label>
           <p className="row-meta">
-            Schemas 1–3 supported · maximum 5 MB · legacy workspace JSON
+            Schemas 1–4 supported · maximum 5 MB · legacy workspace JSON
             accepted.
           </p>
         </section>
@@ -230,8 +253,8 @@ export default function DataBackup({
             <button
               className="primary"
               disabled={!confirm}
-              onClick={() => {
-                if (onReplace(preview.state, preview.source)) {
+              onClick={async () => {
+                if (await onReplace(preview.state, preview.source)) {
                   setPreview(null);
                   setMessage(
                     "Workspace restored. Your previous workspace is in local snapshots.",
@@ -258,6 +281,58 @@ export default function DataBackup({
             </p>
           </div>
         </div>
+        <p className="muted">
+          {status?.confirmedAt
+            ? `Last user-confirmed saved file: ${new Date(status.confirmedAt).toLocaleString()}`
+            : "No external backup has been confirmed saved."}
+        </p>
+        <p className="muted">
+          {status
+            ? workspaceContent(data) === status.content
+              ? "Workspace unchanged since last export request."
+              : "Workspace changed since last export request."
+            : "Export your workspace to establish backup status."}
+        </p>
+        {confirmationPending && (
+          <div className="backup-confirm">
+            <p className="muted">
+              Did the download finish and did you keep the file outside this
+              browser? This is your confirmation, not an automatic check.
+            </p>
+            <button
+              className="secondary"
+              onClick={() => {
+                try {
+                  if (!status) throw new Error("Export status is missing.");
+                  const saved = {
+                    ...status,
+                    confirmedAt: new Date().toISOString(),
+                  };
+                  localStorage.setItem(
+                    EXPORT_STATUS_KEY,
+                    JSON.stringify(saved),
+                  );
+                  onExportChange(saved);
+                  setConfirmationPending(false);
+                  setMessage(
+                    "You confirmed that the downloaded backup was saved.",
+                  );
+                  refresh(revision + 1);
+                } catch (e) {
+                  setError((e as Error).message);
+                }
+              }}
+            >
+              I saved the backup file
+            </button>
+            <button
+              className="subtle-link"
+              onClick={() => setConfirmationPending(false)}
+            >
+              Not yet
+            </button>
+          </div>
+        )}
         <p className="muted">
           Current schema: {SCHEMA_VERSION}. Last local backup:{" "}
           {history[0]
@@ -340,8 +415,8 @@ export default function DataBackup({
               <button
                 className="primary"
                 disabled={phrase !== "CLEAR MY WORKSPACE"}
-                onClick={() => {
-                  if (onClear(phrase)) {
+                onClick={async () => {
+                  if (await onClear(phrase)) {
                     setClear(false);
                     setPhrase("");
                     setMessage(

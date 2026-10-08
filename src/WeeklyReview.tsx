@@ -1,3 +1,4 @@
+import { habitWeek } from "./daily";
 import { weeklyReview } from "./personal";
 import { type State } from "./data";
 export default function WeeklyReview({
@@ -123,17 +124,8 @@ export default function WeeklyReview({
             <div className="important-date" key={h.name}>
               <span>{h.name}</span>
               <strong>
-                {
-                  new Set(
-                    h.dates.filter(
-                      (d) =>
-                        d >= r.start &&
-                        d <= r.end &&
-                        (!h.createdOn || d >= h.createdOn),
-                    ),
-                  ).size
-                }{" "}
-                days
+                {habitWeek(h, r.end).complete} / {habitWeek(h, r.end).possible}{" "}
+                scheduled days
               </strong>
             </div>
           ))}

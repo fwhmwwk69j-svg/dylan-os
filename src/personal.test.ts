@@ -53,7 +53,7 @@ describe("personal workspace and compatibility", () => {
     const migrated = restoreWorkspace(
       JSON.stringify({ ...old, customField: "keep" }),
     );
-    expect(migrated).toEqual({ ...old, customField: "keep", schemaVersion: 3 });
+    expect(migrated).toEqual({ ...old, customField: "keep", schemaVersion: 4 });
     expect(migrated.tasks[0].completedOn).toBeUndefined();
     expect(restoreWorkspace(JSON.stringify(migrated))).toEqual(migrated);
   });

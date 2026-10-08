@@ -38,7 +38,17 @@ export type Workout = {
   exercise: string;
   weight: number;
   reps: number;
+  sets?: number;
   completed: boolean;
+};
+export type Habit = {
+  name: string;
+  dates: string[];
+  createdOn?: string;
+  target?: number;
+  schedule?: number[];
+  counts?: Record<string, number>;
+  scheduleHistory?: { effectiveOn: string; days: number[]; target: number }[];
 };
 export type State = {
   tasks: Task[];
@@ -48,7 +58,11 @@ export type State = {
   workouts: Workout[];
   schemaVersion?: number;
   goalWeight: number | null;
-  habits: { name: string; dates: string[]; createdOn?: string }[];
+  habits: Habit[];
+  preferences?: {
+    dashboard?: { order: string[]; hidden: string[] };
+    priorities?: { date: string; ids: string[] };
+  };
   nutrition: {
     date: string;
     calories: number;
