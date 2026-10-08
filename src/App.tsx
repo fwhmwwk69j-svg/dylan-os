@@ -1,3 +1,7 @@
+import Planner from "./Planner";
+import TodayPlanning from "./TodayPlanning";
+import FitnessGoalsEditor, { GoalProgress } from "./FitnessGoals";
+import ReflectionEditor from "./ReflectionEditor";
 import { parseExportStatus } from "./daily";
 import CourseNotes from "./CourseNotes";
 import {
@@ -89,10 +93,12 @@ type Page =
   | "Tasks"
   | "AI Assistant"
   | "Habits"
+  | "Weekly Planner"
   | "Weekly Review"
   | "Data & Backup";
 const navigation = [
   { name: "Today" as Page, icon: Sun },
+  { name: "Weekly Planner" as Page, icon: CalendarDays },
   { name: "College" as Page, icon: GraduationCap },
   { name: "Fitness" as Page, icon: Dumbbell },
   { name: "Tasks" as Page, icon: CheckCheck },
@@ -188,6 +194,7 @@ export default function App() {
   const [initial] = useState(load);
   const revisionRef = useRef<string | null>(null);
   const [conflict, setConflict] = useState(false);
+  const [reloadVersion, setReloadVersion] = useState(0);
   const [otherTabs, setOtherTabs] = useState(0);
   const [editLogDate, setEditLogDate] = useState<string | null>(null);
   const [editWorkoutId, setEditWorkoutId] = useState<string | null>(null);
@@ -410,7 +417,9 @@ export default function App() {
   }, []);
   function reloadLatest() {
     if (
-      (modal || courseId) &&
+      (modal ||
+        courseId ||
+        ["Weekly Planner", "Weekly Review", "Fitness"].includes(page)) &&
       !window.confirm(
         "Reload the latest workspace? Unsaved form text or course notes will be discarded.",
       )
@@ -419,6 +428,7 @@ export default function App() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       setData(restoreWorkspace(raw));
+      setReloadVersion((version) => version + 1);
       revisionRef.current = raw;
       setLoadError("");
       setConflict(false);
@@ -1049,6 +1059,11 @@ export default function App() {
                 </span>
                 <span>{scheduledHabits.length} habits scheduled</span>
               </div>
+              <TodayPlanning
+                data={data}
+                onPlanner={() => navigate("Weekly Planner")}
+              />
+              <GoalProgress data={data} />
               <div className="stat-grid">
                 <div className="stat">
                   <span>
@@ -1472,11 +1487,44 @@ export default function App() {
               onExportChange={setExportStatus}
             />
           )}
+          {page === "Weekly Planner" && (
+            <Planner
+              key={reloadVersion}
+              data={data}
+              onChange={update}
+              onDelete={deleteRecords}
+              onToday={() => navigate("Today")}
+              onOpen={(kind, id) => {
+                if (kind === "task") {
+                  setEditTask(data.tasks.find((t) => t.id === id) ?? null);
+                  setModal("task");
+                }
+                if (kind === "school") {
+                  setEditAssignment(
+                    data.assignments.find((a) => a.id === id) ?? null,
+                  );
+                  setModal("assignment");
+                }
+                if (kind === "workout") {
+                  setEditWorkoutId(id);
+                  setModal("workout");
+                }
+              }}
+            />
+          )}
           {page === "Weekly Review" && (
             <WeeklyReview
               data={data}
               onToday={() => navigate("Today")}
               onFitness={() => navigate("Fitness")}
+              reflection={
+                <ReflectionEditor
+                  key={reloadVersion}
+                  data={data}
+                  onChange={update}
+                  onDelete={deleteRecords}
+                />
+              }
             />
           )}
           {page === "College" && (
@@ -1666,6 +1714,11 @@ export default function App() {
                   <Plus size={16} /> Log workout
                 </button>
               </div>
+              <FitnessGoalsEditor
+                key={reloadVersion}
+                data={data}
+                onChange={update}
+              />
               <div className="stat-grid">
                 <div className="stat">
                   <span>Body weight</span>
@@ -2120,7 +2173,7 @@ export default function App() {
             <span>
               Dylan OS <span>·</span> A little better, every day.
             </span>
-            <span>V1.3 · Your workspace · Stored on this device</span>
+            <span>V1.4 · Your workspace · Stored on this device</span>
           </footer>
         </div>
       </main>

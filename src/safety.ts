@@ -2,6 +2,8 @@ import type { State } from "./data";
 export const STORAGE_KEY = "dylan-os-v1";
 export function emptyWorkspace(): State {
   return {
+    commitments: [],
+    weeklyReflections: [],
     tasks: [],
     courses: [],
     assignments: [],
@@ -14,7 +16,7 @@ export function emptyWorkspace(): State {
   };
 }
 import { localDate } from "./dates";
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 export const BACKUP_KEY = "dylan-os-backups-v1";
 export const EXPORT_KEY = "dylan-os-last-export";
 export const MAX_BACKUPS = 5;
@@ -28,6 +30,8 @@ const collections = [
   "nutrition",
   "habits",
   "dates",
+  "commitments",
+  "weeklyReflections",
 ] as const;
 type RecordValue = Record<string, unknown>;
 function object(value: unknown): RecordValue {
@@ -71,11 +75,17 @@ function grade(v: unknown) {
 export function validateWorkspace(value: unknown): State {
   const root = object(value);
   const schema = root.schemaVersion === undefined ? 1 : root.schemaVersion;
-  if (!Number.isInteger(schema) || ![1, 2, 3, 4].includes(schema as number))
+  if (!Number.isInteger(schema) || ![1, 2, 3, 4, 5].includes(schema as number))
     throw new Error(
-      "Unsupported workspace schema. Supported versions: 1, 2, 3, 4.",
+      "Unsupported workspace schema. Supported versions: 1, 2, 3, 4, 5.",
     );
   for (const key of collections) {
+    if (
+      (key === "commitments" || key === "weeklyReflections") &&
+      root[key] === undefined &&
+      (schema as number) < 5
+    )
+      continue;
     if (!Array.isArray(root[key]))
       throw new Error(`Missing or invalid collection: ${key}.`);
     for (const value of root[key] as unknown[]) object(value);
@@ -226,8 +236,101 @@ export function validateWorkspace(value: unknown): State {
         throw new Error("Choose up to three priorities.");
     }
   }
+  const commitmentIds = new Set();
+  const signatures = new Set();
+  for (const value of (root.commitments ?? []) as unknown[]) {
+    const r = object(value);
+    text(r.id, "Commitment ID");
+    if (commitmentIds.has(r.id)) throw new Error("Duplicate commitment ID.");
+    commitmentIds.add(r.id);
+    text(r.name, "Commitment name");
+    if (!["Class", "Work", "Personal"].includes(r.kind as string))
+      throw new Error("Invalid commitment type.");
+    validateDays(r.days);
+    if (new Set(r.days as number[]).size !== (r.days as number[]).length)
+      throw new Error("Duplicate commitment weekdays.");
+    for (const key of ["startTime", "endTime"])
+      if (
+        typeof r[key] !== "string" ||
+        !/^([01]\d|2[0-3]):[0-5]\d$/.test(r[key] as string)
+      )
+        throw new Error("Commitment times must use HH:MM.");
+    if ((r.endTime as string) <= (r.startTime as string))
+      throw new Error(
+        "End time must be after start time. Split overnight commitments into two entries.",
+      );
+    date(r.startsOn, "Commitment start date");
+    if (r.endsOn !== null) {
+      date(r.endsOn, "Commitment end date");
+      if ((r.endsOn as string) < (r.startsOn as string))
+        throw new Error("Commitment end date precedes start date.");
+    }
+    if (!Array.isArray(r.exceptions))
+      throw new Error("Commitment exceptions must be an array.");
+    r.exceptions.forEach((d) => date(d, "Exception date"));
+    if (new Set(r.exceptions).size !== r.exceptions.length)
+      throw new Error("Duplicate exception dates.");
+    const signature = JSON.stringify([
+      (r.name as string).trim().toLowerCase(),
+      r.kind,
+      [...(r.days as number[])].sort(),
+      r.startTime,
+      r.endTime,
+      r.startsOn,
+      r.endsOn,
+    ]);
+    if (signatures.has(signature))
+      throw new Error("This weekly commitment already exists.");
+    signatures.add(signature);
+  }
+  const reflectionIds = new Set(),
+    weeks = new Set();
+  for (const value of (root.weeklyReflections ?? []) as unknown[]) {
+    const r = object(value);
+    text(r.id, "Reflection ID");
+    date(r.weekStart, "Reflection week");
+    if (new Date(r.weekStart + "T12:00:00").getDay() !== 1)
+      throw new Error("Reflection week must start on Monday.");
+    if (reflectionIds.has(r.id) || weeks.has(r.weekStart))
+      throw new Error("Duplicate weekly reflection.");
+    reflectionIds.add(r.id);
+    weeks.add(r.weekStart);
+    text(r.reflection, "Weekly reflection", false);
+    if (!Array.isArray(r.priorities) || r.priorities.length !== 3)
+      throw new Error("Enter exactly three priorities for the following week.");
+    r.priorities.forEach((p) => text(p, "Weekly priority"));
+    if (
+      new Set((r.priorities as string[]).map((p) => p.trim().toLowerCase()))
+        .size !== 3
+    )
+      throw new Error("Choose three distinct weekly priorities.");
+    if (
+      typeof r.savedAt !== "string" ||
+      !Number.isFinite(Date.parse(r.savedAt))
+    )
+      throw new Error("Invalid reflection save timestamp.");
+  }
+  if (root.fitnessGoals !== undefined) {
+    const goals = object(root.fitnessGoals);
+    for (const [key, max] of [
+      ["calories", 20000],
+      ["protein", 2000],
+      ["steps", 100000],
+      ["weeklyWorkouts", 21],
+    ] as const) {
+      if (goals[key] === null) continue;
+      num(goals[key], "Fitness goal " + key, 1, max);
+      if (key !== "protein" && !Number.isInteger(goals[key]))
+        throw new Error("This fitness goal must be a whole number.");
+    }
+  }
   // Keep every unknown field, at every nesting level. No reconstruction from a field allowlist.
-  return { ...root, schemaVersion: SCHEMA_VERSION } as State;
+  return {
+    ...root,
+    commitments: root.commitments ?? [],
+    weeklyReflections: root.weeklyReflections ?? [],
+    schemaVersion: SCHEMA_VERSION,
+  } as State;
 }
 export function exportWorkspace(state: State, now = new Date()) {
   return { ...validateWorkspace(state), exportedAt: now.toISOString() };

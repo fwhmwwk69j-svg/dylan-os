@@ -211,7 +211,7 @@ export default function DataBackup({
             />
           </label>
           <p className="row-meta">
-            Schemas 1–4 supported · maximum 5 MB · legacy workspace JSON
+            Schemas 1–5 supported · maximum 5 MB · legacy workspace JSON
             accepted.
           </p>
         </section>
@@ -226,7 +226,11 @@ export default function DataBackup({
             {Object.entries(summary(preview.state)).map(([key, count]) => (
               <span key={key}>
                 <strong>{count}</strong>{" "}
-                {key === "assignments" ? "assignments/exams" : key}
+                {key === "assignments"
+                  ? "assignments/exams"
+                  : key === "weeklyReflections"
+                    ? "weekly reflections"
+                    : key}
               </span>
             ))}
           </div>
@@ -235,8 +239,23 @@ export default function DataBackup({
             {preview.state.goalWeight === null
               ? "Not set"
               : `${preview.state.goalWeight} lb`}
-            . Notes, grades, and history travel with their records. Current data
-            will be replaced; a snapshot must be saved first.
+            . Fitness goals:{" "}
+            {preview.state.fitnessGoals
+              ? Object.entries(preview.state.fitnessGoals)
+                  .filter(
+                    ([key, value]) =>
+                      [
+                        "calories",
+                        "protein",
+                        "steps",
+                        "weeklyWorkouts",
+                      ].includes(key) && value !== null,
+                  )
+                  .map(([key, value]) => `${key}: ${value}`)
+                  .join(" · ") || "None set"
+              : "None set"}
+            . Notes, grades, preferences, and history travel with their records.
+            Current data will be replaced; a snapshot must be saved first.
           </p>
           <label className="check-label">
             <input

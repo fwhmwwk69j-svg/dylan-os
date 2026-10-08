@@ -1,3 +1,4 @@
+import { SCHEMA_VERSION } from "./safety";
 import type { State, Habit } from "./data";
 import { day, localDate } from "./dates";
 export const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6];
@@ -150,7 +151,7 @@ export function workspaceContent(state: State) {
     exportedAt?: string;
   };
   void ignored;
-  return JSON.stringify({ ...rest, schemaVersion: 4 });
+  return JSON.stringify({ ...rest, schemaVersion: SCHEMA_VERSION });
 }
 export type ExportStatus = {
   requestedAt: string;

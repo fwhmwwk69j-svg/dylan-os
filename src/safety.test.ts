@@ -54,16 +54,16 @@ describe("export and import", () => {
       "dylan-os-backup-2026-10-07.json",
     );
   });
-  it.each([undefined, 1, 2, 3, 4])(
+  it.each([undefined, 1, 2, 3, 4, 5])(
     "accepts and migrates legacy schema %s without inventing completion dates",
     (schemaVersion) => {
       const s = { ...sampleData(), schemaVersion };
       const loaded = parseImport(JSON.stringify(s));
-      expect(loaded).toEqual({ ...s, schemaVersion: 4 });
+      expect(loaded).toEqual({ ...s, schemaVersion: 5 });
       expect(loaded.tasks[0].completedOn).toBeUndefined();
     },
   );
-  it.each([0, 5, 999, "3", null])(
+  it.each([0, 6, 999, "3", null])(
     "rejects unsupported schema %s",
     (schemaVersion) => {
       expect(() =>
@@ -137,7 +137,7 @@ describe("snapshots and clearing", () => {
     const snapshot = snapshots(storage)[0];
     expect(JSON.parse(snapshot.raw)).toEqual(original);
     const restored = restoreSnapshot(storage, emptyWorkspace(), snapshot);
-    expect(restored).toEqual({ ...original, schemaVersion: 4 });
+    expect(restored).toEqual({ ...original, schemaVersion: 5 });
     expect(snapshots(storage)[0].reason).toBe("Before restoring backup");
     expect(JSON.parse(snapshots(storage)[0].raw).tasks).toHaveLength(0);
   });
@@ -162,7 +162,7 @@ describe("snapshots and clearing", () => {
     expect(() => clearWorkspace(storage, s, "CLEAR")).toThrow();
     expect(snapshots(storage)).toHaveLength(0);
     const cleared = clearWorkspace(storage, s, "CLEAR MY WORKSPACE");
-    expect(cleared).toEqual({ ...emptyWorkspace(), schemaVersion: 4 });
+    expect(cleared).toEqual({ ...emptyWorkspace(), schemaVersion: 5 });
     expect(JSON.parse(snapshots(storage)[0].raw)).toEqual(s);
     expect(snapshots(storage)[0].reason).toBe("Before clearing workspace");
   });

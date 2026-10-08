@@ -50,6 +50,30 @@ export type Habit = {
   counts?: Record<string, number>;
   scheduleHistory?: { effectiveOn: string; days: number[]; target: number }[];
 };
+export type Commitment = {
+  id: string;
+  name: string;
+  kind: "Class" | "Work" | "Personal";
+  days: number[];
+  startTime: string;
+  endTime: string;
+  startsOn: string;
+  endsOn: string | null;
+  exceptions: string[];
+};
+export type FitnessGoals = {
+  calories: number | null;
+  protein: number | null;
+  steps: number | null;
+  weeklyWorkouts: number | null;
+};
+export type WeeklyReflection = {
+  id: string;
+  weekStart: string;
+  reflection: string;
+  priorities: string[];
+  savedAt: string;
+};
 export type State = {
   tasks: Task[];
   courses: Course[];
@@ -58,6 +82,9 @@ export type State = {
   workouts: Workout[];
   schemaVersion?: number;
   goalWeight: number | null;
+  commitments: Commitment[];
+  weeklyReflections: WeeklyReflection[];
+  fitnessGoals?: FitnessGoals;
   habits: Habit[];
   preferences?: {
     dashboard?: { order: string[]; hidden: string[] };
@@ -74,6 +101,8 @@ export type State = {
 export const uid = () => crypto.randomUUID();
 export function sampleData(): State {
   return {
+    commitments: [],
+    weeklyReflections: [],
     tasks: [
       {
         id: "t1",

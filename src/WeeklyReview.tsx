@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { habitWeek } from "./daily";
 import { weeklyReview } from "./personal";
 import { type State } from "./data";
@@ -5,10 +6,12 @@ export default function WeeklyReview({
   data,
   onToday,
   onFitness,
+  reflection,
 }: {
   data: State;
   onToday: () => void;
   onFitness: () => void;
+  reflection: ReactNode;
 }) {
   const r = weeklyReview(data);
   return (
@@ -25,6 +28,7 @@ export default function WeeklyReview({
           Back to Today
         </button>
       </div>
+      {reflection}
       <div className="stat-grid">
         <div className="stat">
           <span>Tasks completed</span>
