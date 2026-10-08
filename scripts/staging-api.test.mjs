@@ -64,6 +64,7 @@ if (missing.length) {
   ) {
     const response = await fetch(base.origin + path, {
       method,
+      signal: AbortSignal.timeout(30000),
       headers: {
         apikey: key,
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -111,7 +112,13 @@ if (missing.length) {
       body: { email, password },
     });
     assert.equal(logged.status, 200, "Synthetic staging login failed");
-    return { id, token: logged.body.access_token };
+    return {
+      id,
+      email,
+      password,
+      token: logged.body.access_token,
+      refreshToken: logged.body.refresh_token,
+    };
   }
   before(async () => {
     await db.connect();
@@ -127,33 +134,46 @@ if (missing.length) {
     b = await provision();
   });
   after(async () => {
-    if (objects.length) {
-      const removed = await request(
-        "/storage/v1/object/dylan-staging-private",
-        {
-          key: cfg.DYLAN_STAGING_SECRET_KEY,
-          token: cfg.DYLAN_STAGING_SECRET_KEY,
-          method: "DELETE",
-          body: { prefixes: objects },
-        },
-      );
-      assert(
-        [200, 204].includes(removed.status),
-        "Synthetic storage cleanup failed",
-      );
+    const failures = [];
+    try {
+      if (objects.length) {
+        try {
+          const removed = await request(
+            "/storage/v1/object/dylan-staging-private",
+            {
+              key: cfg.DYLAN_STAGING_SECRET_KEY,
+              token: cfg.DYLAN_STAGING_SECRET_KEY,
+              method: "DELETE",
+              body: { prefixes: objects },
+            },
+          );
+          if (![200, 204].includes(removed.status))
+            failures.push("storage objects");
+        } catch {
+          failures.push("storage objects");
+        }
+      }
+      for (const id of accounts) {
+        try {
+          const removed = await request("/auth/v1/admin/users/" + id, {
+            key: cfg.DYLAN_STAGING_SECRET_KEY,
+            token: cfg.DYLAN_STAGING_SECRET_KEY,
+            method: "DELETE",
+          });
+          if (![200, 204].includes(removed.status))
+            failures.push("synthetic user " + id);
+        } catch {
+          failures.push("synthetic user " + id);
+        }
+      }
+    } finally {
+      await db.end();
     }
-    for (const id of accounts) {
-      const r = await request("/auth/v1/admin/users/" + id, {
-        key: cfg.DYLAN_STAGING_SECRET_KEY,
-        token: cfg.DYLAN_STAGING_SECRET_KEY,
-        method: "DELETE",
-      });
-      assert(
-        [200, 204].includes(r.status),
-        "Synthetic account cleanup failed; remove test users manually",
-      );
-    }
-    await db.end();
+    assert.equal(
+      failures.length,
+      0,
+      "Cleanup incomplete; manually remove only: " + failures.join(", "),
+    );
   });
   const task = (id) => ({
     id,
@@ -207,6 +227,28 @@ if (missing.length) {
       )
     ).rows;
     assert.equal(grants[0].leaked, false);
+    const unsafe = await db.query(
+      `
+      select c.relname, r.role from pg_class c
+      join pg_namespace n on n.oid=c.relnamespace
+      cross join (values ('anon'),('authenticated')) r(role)
+      where n.nspname='public' and c.relname=any($1::text[])
+      and (has_table_privilege(r.role,c.oid,'INSERT') or has_table_privilege(r.role,c.oid,'UPDATE') or has_table_privilege(r.role,c.oid,'DELETE') or has_table_privilege(r.role,c.oid,'TRUNCATE'))`,
+      [rows.map((r) => r.relname)],
+    );
+    assert.deepEqual(unsafe.rows, []);
+    const helpers = await db.query(
+      `select p.proname from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='dylan_private' and (has_function_privilege('anon',p.oid,'EXECUTE') or (p.proname <> 'actor' and has_function_privilege('authenticated',p.oid,'EXECUTE')))`,
+    );
+    assert.deepEqual(helpers.rows, []);
+    for (const table of rows.map((r) => r.relname)) {
+      const foreign = await request(
+        "/rest/v1/" + table + "?user_id=eq." + a.id,
+        { token: b.token },
+      );
+      assert.equal(foreign.status, 200);
+      assert.deepEqual(foreign.body, []);
+    }
   });
   test("hosted direct writes/owner spoofing are forbidden and foreign records remain invisible", async () => {
     const created = await rpc("dylan_command", a.token, {
@@ -372,6 +414,7 @@ if (missing.length) {
     );
     if (listing.status === 200) assert.deepEqual(listing.body, []);
     else assert([400, 401, 403].includes(listing.status));
+    objects.push(a.id + "/synthetic.json");
     const upload = await fetch(
       base.origin +
         "/storage/v1/object/dylan-staging-private/" +
@@ -379,6 +422,7 @@ if (missing.length) {
         "/synthetic.json",
       {
         method: "POST",
+        signal: AbortSignal.timeout(30000),
         headers: {
           apikey: cfg.DYLAN_STAGING_PUBLISHABLE_KEY,
           Authorization: "Bearer " + a.token,
@@ -394,6 +438,179 @@ if (missing.length) {
     );
     assert([400, 401, 403, 404].includes(download.status));
   });
+  test("hosted password authentication rejects incorrect passwords and verifies token identity", async () => {
+    const bad = await request("/auth/v1/token?grant_type=password", {
+      method: "POST",
+      body: { email: a.email, password: randomUUID() },
+    });
+    assert([400, 401, 403].includes(bad.status));
+    for (const user of [a, b]) {
+      const identity = await request("/auth/v1/user", { token: user.token });
+      assert.equal(identity.status, 200);
+      assert.equal(identity.body.id, user.id);
+    }
+  });
+  test("hosted allowlisting cannot be bypassed by authenticated users or user metadata", async () => {
+    const user = await provision();
+    await db.query(
+      "delete from public.dylan_staging_accounts where user_id=$1",
+      [user.id],
+    );
+    const metadata = await request("/auth/v1/user", {
+      token: user.token,
+      method: "PUT",
+      body: {
+        data: {
+          enabled: true,
+          synthetic_only: true,
+          role: "admin",
+          entitlements: ["all"],
+        },
+      },
+    });
+    assert.equal(metadata.status, 200);
+    for (const name of ["dylan_read", "dylan_export", "dylan_command"])
+      assert(
+        [401, 403].includes(
+          (
+            await rpc(
+              name,
+              user.token,
+              name === "dylan_command"
+                ? { command: { action: "restore" } }
+                : {},
+            )
+          ).status,
+        ),
+      );
+    await db.query(
+      "insert into public.dylan_staging_accounts(user_id,enabled) values($1,false)",
+      [user.id],
+    );
+    assert([401, 403].includes((await rpc("dylan_read", user.token)).status));
+  });
+  test("hosted server-side session expiry denies still-signed tokens and recovers after expiry reset", async () => {
+    const user = await provision();
+    const claims = JSON.parse(
+      Buffer.from(user.token.split(".")[1], "base64url").toString(),
+    );
+    assert(claims.session_id);
+    const original = await db.query(
+      "select not_after from auth.sessions where id=$1 and user_id=$2",
+      [claims.session_id, user.id],
+    );
+    assert.equal(original.rowCount, 1);
+    try {
+      await db.query(
+        "update auth.sessions set not_after=now()-interval '1 minute' where id=$1 and user_id=$2",
+        [claims.session_id, user.id],
+      );
+      for (const name of ["dylan_read", "dylan_export", "dylan_command"])
+        assert(
+          [401, 403].includes(
+            (
+              await rpc(
+                name,
+                user.token,
+                name === "dylan_command"
+                  ? { command: { action: "restore" } }
+                  : {},
+              )
+            ).status,
+          ),
+        );
+    } finally {
+      await db.query(
+        "update auth.sessions set not_after=$1 where id=$2 and user_id=$3",
+        [original.rows[0].not_after, claims.session_id, user.id],
+      );
+    }
+    assert.equal((await rpc("dylan_read", user.token)).status, 200);
+  });
+  test("hosted stale record revisions and weak/stale restores roll back records and snapshots", async () => {
+    const current = await read(a);
+    const snaps = await request(
+      "/rest/v1/workspace_snapshots?order=created_at.asc,id.asc",
+      { token: a.token },
+    );
+    assert.equal(snaps.status, 200);
+    const existing = current.data.tasks[0];
+    assert(existing);
+    const commands = [
+      {
+        action: "upsert",
+        collection: "tasks",
+        record: { ...existing, name: "Should never save" },
+        expectedRecordRevision:
+          current.recordRevisions.tasks[existing.id] + 1000,
+        expectedRevision: current.revision,
+      },
+      {
+        action: "restore",
+        snapshotId: snaps.body[0].id,
+        confirmation: "yes",
+        expectedRevision: current.revision,
+      },
+      {
+        action: "restore",
+        snapshotId: snaps.body[0].id,
+        confirmation: "RESTORE MY STAGING SNAPSHOT",
+        expectedRevision: current.revision - 1,
+      },
+    ];
+    for (const command of commands) {
+      const result = await rpc("dylan_command", a.token, { command });
+      assert([400, 409].includes(result.status));
+      assert.deepEqual(await read(a), current);
+      assert.deepEqual(
+        (
+          await request(
+            "/rest/v1/workspace_snapshots?order=created_at.asc,id.asc",
+            { token: a.token },
+          )
+        ).body,
+        snaps.body,
+      );
+    }
+  });
+  test("hosted anonymous exports and owner/foreign/anonymous storage reads are denied", async () => {
+    assert([401, 403].includes((await rpc("dylan_export")).status));
+    const bucket = await db.query(
+      "select public from storage.buckets where id='dylan-staging-private'",
+    );
+    assert.equal(bucket.rowCount, 1);
+    assert.equal(bucket.rows[0].public, false);
+    for (const token of [a.token, b.token, undefined]) {
+      const listing = await request(
+        "/storage/v1/object/list/dylan-staging-private",
+        { token, method: "POST", body: { prefix: a.id, limit: 100 } },
+      );
+      if (listing.status === 200) assert.deepEqual(listing.body, []);
+      else assert([400, 401, 403].includes(listing.status));
+      const download = await request(
+        "/storage/v1/object/dylan-staging-private/" +
+          a.id +
+          "/synthetic-sentinel.json",
+        { token },
+      );
+      assert([400, 401, 403, 404].includes(download.status));
+    }
+    for (const token of [b.token, undefined]) {
+      const path = a.id + "/denied-" + randomUUID() + ".json";
+      objects.push(path);
+      const upload = await request(
+        "/storage/v1/object/dylan-staging-private/" + path,
+        { token, method: "POST", body: { synthetic: true } },
+      );
+      assert([400, 401, 403].includes(upload.status));
+    }
+    const publicRead = await request(
+      "/storage/v1/object/public/dylan-staging-private/" +
+        a.id +
+        "/synthetic-sentinel.json",
+    );
+    assert([400, 401, 403, 404].includes(publicRead.status));
+  });
   test("hosted account switching and logout do not expose A data to B or revoked tokens", async () => {
     assert((await read(a)).data.tasks.length > 0);
     assert.deepEqual((await read(b)).data.tasks, []);
@@ -403,5 +620,11 @@ if (missing.length) {
     });
     assert([200, 204].includes(loggedOut.status));
     assert([401, 403].includes((await rpc("dylan_read", b.token)).status));
+    assert(b.refreshToken);
+    const refresh = await request("/auth/v1/token?grant_type=refresh_token", {
+      method: "POST",
+      body: { refresh_token: b.refreshToken },
+    });
+    assert([400, 401, 403].includes(refresh.status));
   });
 }

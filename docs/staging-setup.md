@@ -70,3 +70,68 @@ This staging release deliberately has no bulk workspace upload, real-data migrat
 - Existing desktop/mobile Chromium regressions passed for planning, quick add, personalization, real browser-tab conflicts, legacy identity migration, export/import/restore, Undo and quota safeguards.
 - **Hosted Supabase: zero passed, one skipped**. Project credentials were absent. Hosted migrations, actual Supabase Auth/GoTrue, Dashboard email/signup/session settings, Storage HTTP behavior and provider backup recovery remain unverified. The CLI could not initialize in this environment due to its home-directory/download restrictions; local SQL/HTTP services were run directly instead. No hosted cloud security pass is claimed.
 - Environment install/start instructions were saved as a draft for future local app and synthetic backend work. Saving does not publish or create a Supabase project; review/save/publish in environment settings if retaining those changes.
+
+## Hosted verification checkpoint: beginner walkthrough
+
+**Pause here before running hosted tests.** This checkpoint prepares tests; it does not authorize real-data migration or switch the app to cloud storage. The expanded hosted suite has not yet run against Supabase.
+
+### Create and prepare your project
+
+1. Sign in to Supabase Dashboard and choose **New project**. Name it `dylan-os-staging`, choose your region, generate a strong database password, and save that password in your password manager. Wait for the project to finish provisioning. Keep it empty except for this checkpoint's synthetic test records.
+2. Open Authentication settings. Turn off **Allow new users to sign up**, anonymous sign-in, phone/SMS and unused providers. Keep email/password sign-in available for administrator-created users. Set JWT expiry to 900 seconds where supported. Use `http://localhost:5173` as the development site URL; allow only exact development/staging redirect URLs. Dashboard labels may vary. No SMTP setup or manual test-user creation is required: the runner creates confirmed `example.invalid` users without sending email.
+3. On your Mac, open Terminal in this repository. With Node 24 installed, run `npm ci`. Install the Supabase CLI with `brew install supabase/tap/supabase`, then `supabase login`. Complete its browser login; do not copy the CLI access token into chat.
+4. Find the **project reference** in Project Settings (also visible in the project URL). Run `supabase link --project-ref YOUR_STAGING_REF`. Enter the database password only at the secure prompt. Check that the reference belongs to the new staging project, then run `supabase db push --dry-run`. Expect the three checked-in migrations, in order. If that is correct, run `supabase db push`.
+5. In Table Editor, confirm the 15 Dylan tables exist. In Storage, confirm `dylan-staging-private` is **private** and there are no public buckets. Do not add permissive policies, enable public signups, upload personal records, or edit the application's persistence configuration. The test suite performs the detailed grants/RLS audit.
+
+### Get and protect the test configuration
+
+| Variable                        | Classification                  | Where to find/set it                                                          |
+| ------------------------------- | ------------------------------- | ----------------------------------------------------------------------------- |
+| `DYLAN_STAGING_URL`             | Public configuration            | Project URL in the Connect dialog or API settings                             |
+| `DYLAN_STAGING_PROJECT_REF`     | Public configuration            | Project reference in Project Settings                                         |
+| `DYLAN_STAGING_PUBLISHABLE_KEY` | Public client key               | API Keys: publishable key, or legacy **anon** key; never service-role         |
+| `DYLAN_STAGING_SECRET_KEY`      | **Secret, operator only**       | API Keys: secret key, or legacy **service_role** key                          |
+| `DYLAN_STAGING_DB_URL`          | **Secret, operator only**       | Connect → PostgreSQL URI, with the database password included and URL-encoded |
+| `DYLAN_STAGING_TEST_APPROVED`   | Operator safety acknowledgement | `1`, only after confirming this is the isolated synthetic project             |
+
+Use a direct database connection or the **session pooler** (usually port 5432), especially if your Mac/network lacks IPv6. Do not select transaction pooling for this checkpoint. The URI must point to this same project. Keep TLS certificate verification enabled; certificate problems are blockers, not reasons to disable verification.
+
+Store secrets in your password manager/macOS Keychain, or your runner's protected environment/CI secret settings. Never put them in source code, `VITE_*` variables, committed `.env` files, issue comments, screenshots, chat, command-line arguments, or Git history. The public values are not privileged credentials, but configure them only for the test runner; no app configuration change is needed.
+
+For a one-time Mac run, start `bash` in Terminal. Export the three public variables using their public values, and set `export DYLAN_STAGING_TEST_APPROVED=1`. Enter secrets with hidden prompts so their values are not saved as shell commands:
+
+```bash
+read -r -s -p 'Staging secret key: ' DYLAN_STAGING_SECRET_KEY
+printf '\n'
+export DYLAN_STAGING_SECRET_KEY
+read -r -s -p 'Complete staging database URI: ' DYLAN_STAGING_DB_URL
+printf '\n'
+export DYLAN_STAGING_DB_URL
+```
+
+Prepare the complete URI privately in your password manager; replace any password placeholder there and percent-encode special characters. Do not paste credentials into this conversation. Environment variables are still accessible to processes running as your OS user; use a trusted machine, avoid debug/env dumps, and close this shell after testing. Rotate a credential immediately if it is exposed.
+
+### What the suite proves when it actually passes
+
+The suite now contains **13 hosted tests**, using actual Auth, REST RPC/table APIs, Storage HTTP, and administrator SQL inspection. It checks:
+
+- Real password login, distinct user identities, incorrect passwords, anonymous/invalid tokens, disabled signups configuration, and metadata/allowlist bypass attempts.
+- Forced RLS on all 15 tables, no browser write grants/private-helper grants (except the narrowly scoped actor function required by RLS), owner-filtered cross-account reads, forbidden writes and owner spoofing, and cross-owner academic relationships.
+- Private exports and snapshots; rejected foreign, weak-confirmation and stale restores; successful restore content and advancing revisions.
+- Concurrent workspace conflicts, stale record conflicts, and unchanged workspace/snapshots after rejected transactions.
+- Private bucket configuration; denied owner, foreign-user and anonymous reads/listings/uploads, plus denied public-object access.
+- Real account switching/logout and refresh-token revocation, plus server-side `auth.sessions.not_after` expiry with a still-signed token. Expiry modifications affect **only runner-created synthetic sessions**, restored in a `finally` block.
+
+Limits remain explicit: this is not an exhaustive penetration test. Naturally elapsed hosted JWT expiry/refresh rotation, full browser login/switch workflows against hosted Auth, email delivery, provider disaster recovery, and operational rollback on hosted staging are not demonstrated by these tests. Local unit tests cover browser cache/pending-request lifecycle; local database tests cover all-domain round trips, backup rotation, course cascades and rollback. Those local results do not substitute for hosted verification. Cross-account table checks include empty collections; populated-domain local coverage is stronger than the hosted fixture coverage.
+
+HTTP requests have timeouts. Cleanup attempts all tracked synthetic users and storage objects even if an earlier deletion fails, then closes the database connection. A cleanup failure fails the run and identifies only synthetic user IDs/object cleanup, without printing credentials. Remove only generated test resources manually if needed.
+
+### Run and interpret the checkpoint
+
+**After completing setup, tell Codex that staging is ready, without sending any keys or passwords.** For Codex execution, place credentials in protected environment settings with real raw-TCP database access; an HTTPS secret proxy cannot substitute for a PostgreSQL password. Otherwise you can run the suite privately on your Mac:
+
+```bash
+npm run test:staging
+```
+
+A successful checkpoint requires **13 passed, zero failed, zero skipped/cancelled**, successful setup/cleanup hooks, and exit status 0. Missing variables currently produce one skipped test and zero passes—even with exit status 0, that means **UNVERIFIED**. Any assertion, TLS/network error, setup error or cleanup error means the checkpoint has not passed. Do not publish raw logs without checking for sensitive information. Share only counts and sanitized errors. Do not proceed to migration or production activation based on a partial pass.
