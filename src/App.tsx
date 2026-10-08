@@ -1,8 +1,19 @@
+import { useWorkspace } from "./application/useWorkspace";
+import { useWorkspacePresence } from "./application/useWorkspacePresence";
+import {
+  saveFormCommand,
+  formSnapshotReason,
+  isFormKind,
+  deleteRecord,
+  courseNotes,
+  toggleWorkout,
+} from "./application/commands";
+import { preferences } from "./persistence/preferences";
+import { CURRENT_ROUTES } from "./platform/modules";
 import Planner from "./Planner";
 import TodayPlanning from "./TodayPlanning";
 import FitnessGoalsEditor, { GoalProgress } from "./FitnessGoals";
 import ReflectionEditor from "./ReflectionEditor";
-import { parseExportStatus } from "./daily";
 import CourseNotes from "./CourseNotes";
 import {
   createContext,
@@ -39,7 +50,6 @@ import {
 } from "lucide-react";
 import {
   day,
-  uid,
   toggleTask,
   averageWeight,
   sessionCount,
@@ -49,15 +59,11 @@ import {
   type Assignment,
 } from "./data";
 import {
-  emptyWorkspace,
-  restoreWorkspace,
-  STORAGE_KEY,
   urgency,
   dueTasks,
   schoolWorkload,
   toggleAssignment,
   toggleHabit,
-  removeCourse,
 } from "./personal";
 import DashboardSettings from "./DashboardSettings";
 import HabitHistory from "./HabitHistory";
@@ -71,16 +77,10 @@ import {
   habitStreak,
   habitWeek,
   setHabitCount,
-  editHabitPlan,
-  EXPORT_STATUS_KEY,
-  REMINDER_KEY,
   backupReminder,
-  workspaceContent,
   type ExportStatus,
 } from "./daily";
-import { coordinatedWrite } from "./crossTab";
 import DataBackup from "./DataBackup";
-import { deletion, undoDeletion, type Deletion } from "./safety";
 import WeeklyReview from "./WeeklyReview";
 const WeightChart = lazy(() => import("./Charts"));
 const BenchChart = lazy(() =>
@@ -96,34 +96,24 @@ type Page =
   | "Weekly Planner"
   | "Weekly Review"
   | "Data & Backup";
-const navigation = [
-  { name: "Today" as Page, icon: Sun },
-  { name: "Weekly Planner" as Page, icon: CalendarDays },
-  { name: "College" as Page, icon: GraduationCap },
-  { name: "Fitness" as Page, icon: Dumbbell },
-  { name: "Tasks" as Page, icon: CheckCheck },
-  { name: "AI Assistant" as Page, icon: Sparkles },
-  { name: "Data & Backup" as Page, icon: ShieldCheck },
-];
+const routeIcons = {
+  Today: Sun,
+  "Weekly Planner": CalendarDays,
+  College: GraduationCap,
+  Fitness: Dumbbell,
+  Tasks: CheckCheck,
+  "AI Assistant": Sparkles,
+  "Data & Backup": ShieldCheck,
+};
+const navigation = CURRENT_ROUTES.map((route) => ({
+  name: route.name as Page,
+  icon: routeIcons[route.name],
+}));
 const formatDate = (date: string) =>
   new Date(date + "T12:00:00").toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
   });
-function load() {
-  try {
-    return {
-      data: restoreWorkspace(localStorage.getItem(STORAGE_KEY)),
-      error: "",
-    };
-  } catch {
-    return {
-      data: emptyWorkspace(),
-      error:
-        "Saved workspace could not be read. Your stored data has been preserved; changes are blocked until it can be restored.",
-    };
-  }
-}
 function Urgency({
   due,
   completed = false,
@@ -191,40 +181,39 @@ function Empty({ children }: { children: ReactNode }) {
 }
 export default function App() {
   const dialogRef = useRef<HTMLElement>(null);
-  const [initial] = useState(load);
-  const revisionRef = useRef<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  const workspace = useWorkspace();
+  const {
+    data,
+    ready,
+    loadError,
+    undo,
+    conflict,
+    notice,
+    setNotice,
+    update,
+    undoLast,
+    dismissUndo,
+    repository,
+  } = workspace;
+  const otherTabs = useWorkspacePresence();
   const [reloadVersion, setReloadVersion] = useState(0);
-  const [otherTabs, setOtherTabs] = useState(0);
   const [editLogDate, setEditLogDate] = useState<string | null>(null);
   const [editWorkoutId, setEditWorkoutId] = useState<string | null>(null);
   const [backupDismissed, setBackupDismissed] = useState(() => {
     try {
-      return Number(localStorage.getItem(REMINDER_KEY) || 0);
+      return preferences.reminder();
     } catch {
       return 0;
     }
   });
   const [exportStatus, setExportStatus] = useState<ExportStatus | null>(() => {
     try {
-      return parseExportStatus(localStorage.getItem(EXPORT_STATUS_KEY));
+      return preferences.exportInfo().status;
     } catch {
       return null;
     }
   });
-  const [loadError, setLoadError] = useState(initial.error);
-  const [undo, setUndo] = useState<Deletion | null>(null);
-  const [data, setData] = useState<State>(initial.data);
-  const [baseline] = useState(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEY);
-    } catch {
-      return null;
-    }
-  });
-  useEffect(() => {
-    revisionRef.current = baseline;
-  }, [baseline]);
+  useEffect(() => preferences.subscribeExports(setExportStatus), []);
   const [editHabit, setEditHabit] = useState<number | null>(null);
   const [editDate, setEditDate] = useState<number | null>(null);
   const [habitDate, setHabitDate] = useState(day());
@@ -255,14 +244,13 @@ export default function App() {
   const [taskFilter, setTaskFilter] = useState("All");
   const [theme, setTheme] = useState(() => {
     try {
-      return localStorage.getItem("dylan-theme") || "light";
+      return preferences.theme();
     } catch {
       return "light";
     }
   });
   const [menu, setMenu] = useState(false);
   const [formError, setFormError] = useState("");
-  const [notice, setNotice] = useState(initial.error);
   const [messages, setMessages] = useState<{ role: string; text: string }[]>(
     [],
   );
@@ -308,114 +296,13 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
   document.documentElement.dataset.theme = theme;
-  async function update(
-    next: State,
-    reason?: string,
-    recovery = false,
-  ): Promise<boolean> {
-    if (loadError && !recovery) {
-      setNotice(loadError);
-      return false;
-    }
-    const expected = revisionRef.current;
-    try {
-      const editing =
-        (modal === "task" && editTask) ||
-        (modal === "course" && selectedCourse) ||
-        (modal === "assignment" && editAssignment) ||
-        (modal === "habit" && editHabit !== null) ||
-        (modal === "date" && editDate !== null) ||
-        (modal === "workout" && editWorkoutId) ||
-        (modal === "weight" &&
-          data.weights.some((w) => w.date === next.weights.at(-1)?.date)) ||
-        (modal === "nutrition" &&
-          data.nutrition.some((n) => n.date === next.nutrition.at(-1)?.date));
-      const saved = await coordinatedWrite(
-        localStorage,
-        data,
-        next,
-        expected,
-        reason || (editing ? `Before editing ${modal}` : undefined),
-      );
-      revisionRef.current = JSON.stringify(saved);
-      setData(saved);
-      setLoadError("");
-      setNotice("");
-      return true;
-    } catch (e) {
-      if (localStorage.getItem(STORAGE_KEY) !== expected) setConflict(true);
-      setNotice(`Nothing was changed: ${(e as Error).message}`);
-      return false;
-    }
-  }
   async function deleteRecords(next: State, label: string) {
-    const entry = deletion(data, next, label);
-    if (await update(next, `Before deleting ${label}`)) {
-      setUndo(entry);
+    if (await workspace.remove(next, label)) {
       closeModal();
       setCourseId(null);
     }
   }
-  async function undoLast() {
-    if (!undo) return;
-    try {
-      const next = undoDeletion(data, undo);
-      if (await update(next, `Before undoing ${undo.label}`)) setUndo(null);
-    } catch (e) {
-      setNotice((e as Error).message);
-    }
-  }
-  useEffect(() => {
-    if (!undo) return;
-    const timer = setTimeout(
-      () => setUndo(null),
-      Math.max(0, undo.expiresAt - Date.now()),
-    );
-    return () => clearTimeout(timer);
-  }, [undo]);
-  useEffect(() => {
-    function changed(e: StorageEvent) {
-      if (e.key === STORAGE_KEY || e.key === null) {
-        if (localStorage.getItem(STORAGE_KEY) !== revisionRef.current)
-          setConflict(true);
-      }
-      if (e.key === EXPORT_STATUS_KEY) {
-        try {
-          setExportStatus(parseExportStatus(e.newValue));
-        } catch {}
-      }
-    }
-    window.addEventListener("storage", changed);
-    let channel: BroadcastChannel | undefined;
-    const peers = new Map<string, number>();
-    const id = crypto.randomUUID();
-    if (typeof BroadcastChannel !== "undefined") {
-      channel = new BroadcastChannel("dylan-os-presence");
-      channel.onmessage = (e) => {
-        if (e.data?.id === id) return;
-        if (e.data?.type === "leave") peers.delete(e.data.id);
-        else if (e.data?.type === "presence") {
-          peers.set(e.data.id, Date.now());
-          if (e.data.hello) channel?.postMessage({ id, type: "presence" });
-        }
-        setOtherTabs(peers.size);
-      };
-      channel.postMessage({ id, type: "presence", hello: true });
-    }
-    const timer = setInterval(() => {
-      for (const [peer, last] of peers)
-        if (Date.now() - last > 15000) peers.delete(peer);
-      setOtherTabs(peers.size);
-      channel?.postMessage({ id, type: "presence" });
-    }, 5000);
-    return () => {
-      window.removeEventListener("storage", changed);
-      clearInterval(timer);
-      channel?.postMessage({ id, type: "leave" });
-      channel?.close();
-    };
-  }, []);
-  function reloadLatest() {
+  async function reloadLatest() {
     if (
       (modal ||
         courseId ||
@@ -425,24 +312,17 @@ export default function App() {
       )
     )
       return;
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      setData(restoreWorkspace(raw));
+    if (await workspace.reload()) {
       setReloadVersion((version) => version + 1);
-      revisionRef.current = raw;
-      setLoadError("");
-      setConflict(false);
-      setNotice("");
-      setUndo(null);
       closeModal();
       setCourseId(null);
       setMessages([]);
-    } catch {
+    } else
       setNotice(
         "Latest saved data could not be loaded. Use Data & Backup for recovery.",
       );
-    }
   }
+
   function navigate(next: Page) {
     setPage(next);
     setCourseId(null);
@@ -595,221 +475,24 @@ export default function App() {
   }
   async function saveForm(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (!isFormKind(modal)) return;
     const f = new FormData(e.currentTarget);
-    const value = (k: string) => String(f.get(k) || "");
-    const number = (k: string) => Number(f.get(k));
-    if (modal === "task") {
-      const t: Task = {
-        ...editTask,
-        id: editTask?.id || uid(),
-        name: value("name").trim(),
-        category: value("category"),
-        priority: value("priority") as Task["priority"],
-        due: value("due"),
-        completed: editTask?.completed || false,
-        recurring: f.get("recurring") === "on",
-        completedOn: editTask?.completedOn,
-      };
-      if (!t.name) return;
-      if (
-        !(await update({
-          ...data,
-          tasks: editTask
-            ? data.tasks.map((x) => (x.id === t.id ? t : x))
-            : [...data.tasks, t],
-        }))
-      )
+    const selection = {
+      taskId: editTask?.id,
+      courseId: selectedCourse?.id,
+      assignmentId: editAssignment?.id,
+      logDate: editLogDate ?? undefined,
+      workoutId: editWorkoutId ?? undefined,
+      habitId: editHabit === null ? undefined : data.habits[editHabit]?.id,
+      dateId: editDate === null ? undefined : data.dates[editDate]?.id,
+    };
+    try {
+      const next = saveFormCommand(data, modal, f, selection);
+      if (!(await update(next, formSnapshotReason(data, modal, f, selection))))
         return;
-    }
-    if (modal === "course") {
-      const c = {
-        ...selectedCourse,
-        id: selectedCourse?.id || uid(),
-        name: value("name").trim(),
-        code: value("code").trim(),
-        instructor: value("instructor"),
-        grade: value("grade") === "" ? null : number("grade"),
-        notes: value("notes"),
-      };
-      if (!c.name) return;
-      if (
-        !(await update({
-          ...data,
-          courses: selectedCourse
-            ? data.courses.map((x) => (x.id === c.id ? c : x))
-            : [...data.courses, c],
-        }))
-      )
-        return;
-    }
-    if (modal === "assignment") {
-      const a: Assignment = {
-        ...editAssignment,
-        id: editAssignment?.id || uid(),
-        name: value("name").trim(),
-        courseId: value("courseId"),
-        due: value("due"),
-        type: value("type") as Assignment["type"],
-        completed: editAssignment?.completed || false,
-        completedOn: editAssignment?.completedOn,
-        grade: value("grade") === "" ? null : number("grade"),
-        notes: value("notes"),
-      };
-      if (!a.name || !data.courses.some((c) => c.id === a.courseId)) return;
-      if (
-        !(await update({
-          ...data,
-          assignments: editAssignment
-            ? data.assignments.map((x) => (x.id === a.id ? a : x))
-            : [...data.assignments, a],
-        }))
-      )
-        return;
-    }
-    if (modal === "weight") {
-      const entry = {
-        ...data.weights.find((w) => w.date === (editLogDate ?? value("date"))),
-        date: value("date"),
-        value: number("weight"),
-      };
-      if (
-        !(await update({
-          ...data,
-          weights: [
-            ...data.weights.filter(
-              (w) => w.date !== (editLogDate ?? entry.date),
-            ),
-            entry,
-          ],
-          goalWeight: value("goal") === "" ? null : number("goal"),
-        }))
-      )
-        return;
-    }
-    if (modal === "workout") {
-      if (!value("name").trim() || !value("exercise").trim()) {
-        setFormError("Enter a workout and exercise name.");
-        return;
-      }
-      if (value("status") === "Completed" && value("date") > day()) {
-        setFormError(
-          "Choose Planned for a future workout, or log a past/current date.",
-        );
-        return;
-      }
-      if (
-        !(await update({
-          ...data,
-          workouts: editWorkoutId
-            ? data.workouts.map((w) =>
-                w.id === editWorkoutId
-                  ? {
-                      ...w,
-                      date: value("date"),
-                      name: value("name").trim(),
-                      exercise: value("exercise").trim(),
-                      weight: number("weight"),
-                      reps: number("reps"),
-                      sets: number("sets"),
-                      completed: value("status") === "Completed",
-                    }
-                  : w,
-              )
-            : [
-                ...data.workouts,
-                {
-                  id: uid(),
-                  date: value("date"),
-                  name: value("name").trim(),
-                  exercise: value("exercise").trim(),
-                  weight: number("weight"),
-                  reps: number("reps"),
-                  sets: number("sets"),
-                  completed: value("status") === "Completed",
-                },
-              ],
-        }))
-      )
-        return;
-    }
-    if (modal === "nutrition") {
-      const entry = {
-        ...data.nutrition.find(
-          (n) => n.date === (editLogDate ?? value("date")),
-        ),
-        date: value("date"),
-        calories: number("calories"),
-        protein: number("protein"),
-        steps: number("steps"),
-      };
-      if (
-        !(await update({
-          ...data,
-          nutrition: [
-            ...data.nutrition.filter(
-              (n) => n.date !== (editLogDate ?? entry.date),
-            ),
-            entry,
-          ],
-        }))
-      )
-        return;
-    }
-    if (modal === "habit") {
-      const name = value("name").trim();
-      if (!name) return;
-      if (
-        data.habits.some(
-          (h, i) =>
-            i !== editHabit && h.name.toLowerCase() === name.toLowerCase(),
-        )
-      ) {
-        setFormError("That habit already exists.");
-        return;
-      }
-      const days = f.getAll("schedule").map(Number);
-      if (!days.length) {
-        setFormError("Choose at least one scheduled day.");
-        return;
-      }
-      const habit =
-        editHabit === null
-          ? {
-              name,
-              dates: [],
-              createdOn: day(),
-              target: number("target"),
-              schedule: days,
-            }
-          : editHabitPlan(data.habits[editHabit], name, number("target"), days);
-      if (
-        !(await update({
-          ...data,
-          habits:
-            editHabit === null
-              ? [...data.habits, habit]
-              : data.habits.map((h, i) => (i === editHabit ? habit : h)),
-        }))
-      )
-        return;
-    }
-    if (modal === "date") {
-      const date = {
-        ...(editDate === null ? {} : data.dates[editDate]),
-        name: value("name").trim(),
-        date: value("date"),
-      };
-      if (!date.name) return;
-      if (
-        !(await update({
-          ...data,
-          dates:
-            editDate === null
-              ? [...data.dates, date]
-              : data.dates.map((d, i) => (i === editDate ? date : d)),
-        }))
-      )
-        return;
+    } catch (error) {
+      setFormError((error as Error).message);
+      return;
     }
     if (modal === "course" && pendingSchool) {
       setAssignmentType(pendingSchool);
@@ -846,6 +529,12 @@ export default function App() {
     setEditAssignment(null);
     setModal("assignment");
   };
+  if (!ready)
+    return (
+      <div className="app">
+        <p className="muted">Loading workspace…</p>
+      </div>
+    );
   return (
     <div className="app">
       <aside className={`sidebar ${menu ? "open" : ""}`}>
@@ -894,7 +583,7 @@ export default function App() {
               const next = theme === "light" ? "dark" : "light";
               setTheme(next);
               try {
-                localStorage.setItem("dylan-theme", next);
+                preferences.saveTheme(next);
               } catch {
                 setNotice("Theme changes cannot be saved on this browser.");
               }
@@ -979,7 +668,7 @@ export default function App() {
                 onClick={() => {
                   const until = Date.now() + 86400000;
                   try {
-                    localStorage.setItem(REMINDER_KEY, String(until));
+                    preferences.dismiss(until);
                     setBackupDismissed(until);
                   } catch {
                     setNotice("Reminder dismissal could not be saved.");
@@ -1240,16 +929,7 @@ export default function App() {
                           </p>
                           <button
                             className={w.completed ? "secondary" : "primary"}
-                            onClick={() =>
-                              update({
-                                ...data,
-                                workouts: data.workouts.map((x) =>
-                                  x.id === w.id
-                                    ? { ...x, completed: !x.completed }
-                                    : x,
-                                ),
-                              })
-                            }
+                            onClick={() => update(toggleWorkout(data, w.id))}
                           >
                             {w.completed ? (
                               <>
@@ -1461,25 +1141,21 @@ export default function App() {
           )}
           {page === "Data & Backup" && (
             <DataBackup
+              repository={repository}
               data={data}
               loadError={loadError}
               onReplace={async (next, reason) => {
                 if (await update(next, reason, true)) {
-                  setUndo(null);
+                  dismissUndo();
                   setMessages([]);
                   return true;
                 }
                 return false;
               }}
               onClear={async (phrase) => {
-                if (phrase !== "CLEAR MY WORKSPACE") return false;
-                const ok = await update(
-                  emptyWorkspace(),
-                  "Before clearing workspace",
-                  true,
-                );
+                const ok = await workspace.clear(phrase);
                 if (ok) {
-                  setUndo(null);
+                  dismissUndo();
                   setMessages([]);
                 }
                 return ok;
@@ -1686,12 +1362,7 @@ export default function App() {
                         notes={selectedCourse.notes}
                         onSave={(notes) =>
                           update(
-                            {
-                              ...data,
-                              courses: data.courses.map((c) =>
-                                c.id === courseId ? { ...c, notes } : c,
-                              ),
-                            },
+                            courseNotes(data, selectedCourse.id, notes),
                             "Before editing course notes",
                           )
                         }
@@ -1893,14 +1564,7 @@ export default function App() {
                                     : undefined
                                 }
                                 onClick={() =>
-                                  update({
-                                    ...data,
-                                    workouts: data.workouts.map((x) =>
-                                      x.id === w.id
-                                        ? { ...x, completed: !x.completed }
-                                        : x,
-                                    ),
-                                  })
+                                  update(toggleWorkout(data, w.id))
                                 }
                               >
                                 {w.completed ? "Completed" : "Planned"}
@@ -1922,12 +1586,7 @@ export default function App() {
                                 aria-label={`Delete workout ${w.name}`}
                                 onClick={() =>
                                   deleteRecords(
-                                    {
-                                      ...data,
-                                      workouts: data.workouts.filter(
-                                        (x) => x.id !== w.id,
-                                      ),
-                                    },
+                                    deleteRecord(data, "workouts", w.id),
                                     "workout",
                                   )
                                 }
@@ -1949,10 +1608,11 @@ export default function App() {
                 }}
                 onDelete={(kind, date) =>
                   deleteRecords(
-                    {
-                      ...data,
-                      [kind]: data[kind].filter((x) => x.date !== date),
-                    },
+                    deleteRecord(
+                      data,
+                      kind,
+                      data[kind].find((x) => x.date === date)!.id!,
+                    ),
                     kind === "weights"
                       ? "weight entry"
                       : "nutrition/steps entry",
@@ -2173,7 +1833,7 @@ export default function App() {
             <span>
               Dylan OS <span>·</span> A little better, every day.
             </span>
-            <span>V1.4 · Your workspace · Stored on this device</span>
+            <span>V1.5.1 · Your workspace · Stored on this device</span>
           </footer>
         </div>
       </main>
@@ -2186,7 +1846,7 @@ export default function App() {
           <button
             className="icon-button"
             aria-label="Dismiss undo"
-            onClick={() => setUndo(null)}
+            onClick={dismissUndo}
           >
             <X size={16} />
           </button>
@@ -2376,7 +2036,9 @@ export default function App() {
                       required
                       maxLength={100}
                       defaultValue={
-                        editHabit === null ? "" : data.habits[editHabit].name
+                        editHabit === null
+                          ? ""
+                          : (data.habits[editHabit]?.name ?? "")
                       }
                     />
                   </label>
@@ -2394,7 +2056,7 @@ export default function App() {
                         defaultValue={
                           editHabit === null
                             ? 1
-                            : (data.habits[editHabit].target ?? 1)
+                            : (data.habits[editHabit]?.target ?? 1)
                         }
                       />
                     </label>
@@ -2411,7 +2073,7 @@ export default function App() {
                                 editHabit === null
                                   ? true
                                   : (
-                                      data.habits[editHabit].schedule ?? [
+                                      data.habits[editHabit]?.schedule ?? [
                                         0, 1, 2, 3, 4, 5, 6,
                                       ]
                                     ).includes(index)
@@ -2436,7 +2098,9 @@ export default function App() {
                         name="name"
                         required
                         defaultValue={
-                          editDate === null ? "" : data.dates[editDate].name
+                          editDate === null
+                            ? ""
+                            : (data.dates[editDate]?.name ?? "")
                         }
                       />
                     </label>
@@ -2447,7 +2111,9 @@ export default function App() {
                         type="date"
                         required
                         defaultValue={
-                          editDate === null ? day() : data.dates[editDate].date
+                          editDate === null
+                            ? day()
+                            : (data.dates[editDate]?.date ?? day())
                         }
                       />
                     </label>
@@ -2851,7 +2517,7 @@ export default function App() {
                           )
                         )
                           deleteRecords(
-                            removeCourse(data, selectedCourse.id),
+                            deleteRecord(data, "courses", selectedCourse.id),
                             "course and linked school work",
                           );
                       }}
@@ -2865,12 +2531,7 @@ export default function App() {
                       className="danger text-button"
                       onClick={() =>
                         deleteRecords(
-                          {
-                            ...data,
-                            assignments: data.assignments.filter(
-                              (a) => a.id !== editAssignment.id,
-                            ),
-                          },
+                          deleteRecord(data, "assignments", editAssignment.id),
                           "assignment/exam",
                         )
                       }
@@ -2878,54 +2539,53 @@ export default function App() {
                       Delete assignment
                     </button>
                   )}
-                  {editHabit !== null && modal === "habit" && (
-                    <button
-                      type="button"
-                      className="danger text-button"
-                      onClick={() =>
-                        deleteRecords(
-                          {
-                            ...data,
-                            habits: data.habits.filter(
-                              (h, i) => i !== editHabit,
+                  {editHabit !== null &&
+                    data.habits[editHabit] &&
+                    modal === "habit" && (
+                      <button
+                        type="button"
+                        className="danger text-button"
+                        onClick={() =>
+                          deleteRecords(
+                            deleteRecord(
+                              data,
+                              "habits",
+                              data.habits[editHabit].id!,
                             ),
-                          },
-                          "habit",
-                        )
-                      }
-                    >
-                      Delete habit
-                    </button>
-                  )}
-                  {editDate !== null && modal === "date" && (
-                    <button
-                      type="button"
-                      className="danger text-button"
-                      onClick={() =>
-                        deleteRecords(
-                          {
-                            ...data,
-                            dates: data.dates.filter((d, i) => i !== editDate),
-                          },
-                          "important date",
-                        )
-                      }
-                    >
-                      Delete date
-                    </button>
-                  )}
+                            "habit",
+                          )
+                        }
+                      >
+                        Delete habit
+                      </button>
+                    )}
+                  {editDate !== null &&
+                    data.dates[editDate] &&
+                    modal === "date" && (
+                      <button
+                        type="button"
+                        className="danger text-button"
+                        onClick={() =>
+                          deleteRecords(
+                            deleteRecord(
+                              data,
+                              "dates",
+                              data.dates[editDate].id!,
+                            ),
+                            "important date",
+                          )
+                        }
+                      >
+                        Delete date
+                      </button>
+                    )}
                   {editTask && modal === "task" && (
                     <button
                       type="button"
                       className="danger text-button"
                       onClick={() =>
                         deleteRecords(
-                          {
-                            ...data,
-                            tasks: data.tasks.filter(
-                              (t) => t.id !== editTask.id,
-                            ),
-                          },
+                          deleteRecord(data, "tasks", editTask.id),
                           "task",
                         )
                       }

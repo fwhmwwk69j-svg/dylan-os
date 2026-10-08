@@ -1,11 +1,16 @@
 import type { State } from "./data";
 import { persist, STORAGE_KEY, type Store } from "./safety";
 export const WRITE_LOCK = "dylan-os-workspace-write";
-export function checkRevision(store: Store, expected: string | null) {
-  if (store.getItem(STORAGE_KEY) !== expected)
-    throw new Error(
+export class RevisionConflictError extends Error {
+  constructor() {
+    super(
       "Workspace changed in another tab or window. Reload the latest workspace before editing.",
     );
+  }
+}
+export function checkRevision(store: Store, expected: string | null) {
+  if (store.getItem(STORAGE_KEY) !== expected)
+    throw new RevisionConflictError();
 }
 export async function coordinatedWrite(
   store: Store,

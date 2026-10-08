@@ -1,3 +1,4 @@
+import { validateWorkspace } from "./safety";
 import { describe, it, expect } from "vitest";
 import { sampleData, toggleTask, type Task, type Assignment } from "./data";
 import {
@@ -53,7 +54,9 @@ describe("personal workspace and compatibility", () => {
     const migrated = restoreWorkspace(
       JSON.stringify({ ...old, customField: "keep" }),
     );
-    expect(migrated).toEqual({ ...old, customField: "keep", schemaVersion: 5 });
+    expect(migrated).toEqual(
+      validateWorkspace({ ...old, customField: "keep" }),
+    );
     expect(migrated.tasks[0].completedOn).toBeUndefined();
     expect(restoreWorkspace(JSON.stringify(migrated))).toEqual(migrated);
   });

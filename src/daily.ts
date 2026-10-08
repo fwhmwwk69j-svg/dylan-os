@@ -1,6 +1,6 @@
 import { SCHEMA_VERSION } from "./safety";
 import type { State, Habit } from "./data";
-import { day, localDate } from "./dates";
+import { day, localDate, weekday } from "./dates";
 export const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6];
 export const DASHBOARD_CARDS = [
   "priorities",
@@ -25,7 +25,7 @@ export function habitPlan(h: Habit, date: string) {
 export function scheduled(h: Habit, date = day()) {
   return (
     (!h.createdOn || date >= h.createdOn) &&
-    habitPlan(h, date).days.includes(new Date(date + "T12:00:00").getDay())
+    habitPlan(h, date).days.includes(weekday(date))
   );
 }
 export function habitCount(h: Habit, date = day()) {

@@ -326,7 +326,7 @@ describe("complete recovery and compatibility", () => {
       }),
     );
     expect(loaded).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 6,
       commitments: [],
       weeklyReflections: [],
       extension: { keep: true },
@@ -340,7 +340,7 @@ describe("complete recovery and compatibility", () => {
       ),
     ).toThrow(/commitments/);
     expect(() =>
-      parseImport(JSON.stringify({ ...s, schemaVersion: 6 })),
+      parseImport(JSON.stringify({ ...s, schemaVersion: 7 })),
     ).toThrow(/Unsupported/);
   });
   it("exports/imports every new field and previews collection counts", () => {
@@ -350,7 +350,7 @@ describe("complete recovery and compatibility", () => {
     const exported = exportWorkspace(s);
     expect(parseImport(JSON.stringify(exported))).toEqual(exported);
     expect(exported).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 6,
       commitments: s.commitments,
       weeklyReflections: s.weeklyReflections,
       fitnessGoals: s.fitnessGoals,

@@ -1,6 +1,6 @@
 import { habitWeek, habitComplete, setHabitCount, habitPlan } from "./daily";
 import { validateWorkspace, emptyWorkspace } from "./safety";
-import { day, localDate } from "./dates";
+import { day, localDate, addCalendarDays } from "./dates";
 import type { State, Task, Assignment } from "./data";
 export { STORAGE_KEY, emptyWorkspace } from "./safety";
 // Additive migration: never reseed or silently discard the user's Version 1 records.
@@ -9,9 +9,7 @@ export function restoreWorkspace(raw: string | null): State {
   return validateWorkspace(JSON.parse(raw));
 }
 export function offsetDate(date: string, offset: number) {
-  const d = new Date(date + "T12:00:00");
-  d.setDate(d.getDate() + offset);
-  return localDate(d);
+  return addCalendarDays(date, offset);
 }
 export function urgency(due: string, completed = false, today = day()) {
   if (completed) return null;

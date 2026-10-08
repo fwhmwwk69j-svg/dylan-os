@@ -82,7 +82,10 @@ describe("cross-tab coordinated writes", () => {
     await coordinatedWrite(
       store,
       latest,
-      { ...latest, weights: [{ date: "2026-10-08", value: 180 }] },
+      {
+        ...latest,
+        weights: [{ id: "new-weight", date: "2026-10-08", value: 180 }],
+      },
       revision,
       undefined,
       locks,

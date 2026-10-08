@@ -30,7 +30,7 @@ export type Assignment = {
   grade?: number | null;
   notes?: string;
 };
-export type Weight = { date: string; value: number };
+export type Weight = { id?: string; date: string; value: number };
 export type Workout = {
   id: string;
   date: string;
@@ -42,6 +42,7 @@ export type Workout = {
   completed: boolean;
 };
 export type Habit = {
+  id?: string;
   name: string;
   dates: string[];
   createdOn?: string;
@@ -91,12 +92,13 @@ export type State = {
     priorities?: { date: string; ids: string[] };
   };
   nutrition: {
+    id?: string;
     date: string;
     calories: number;
     protein: number;
     steps: number;
   }[];
-  dates: { name: string; date: string }[];
+  dates: { id?: string; name: string; date: string }[];
 };
 export const uid = () => crypto.randomUUID();
 export function sampleData(): State {

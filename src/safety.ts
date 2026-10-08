@@ -1,3 +1,9 @@
+import {
+  COLLECTIONS as collections,
+  LEGACY_ID_COLLECTIONS,
+} from "./domain/collections";
+import { addLegacyIds } from "./domain/identity";
+import { isCalendarDate } from "./dates";
 import type { State } from "./data";
 export const STORAGE_KEY = "dylan-os-v1";
 export function emptyWorkspace(): State {
@@ -16,23 +22,11 @@ export function emptyWorkspace(): State {
   };
 }
 import { localDate } from "./dates";
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 export const BACKUP_KEY = "dylan-os-backups-v1";
 export const EXPORT_KEY = "dylan-os-last-export";
 export const MAX_BACKUPS = 5;
 export const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
-const collections = [
-  "tasks",
-  "courses",
-  "assignments",
-  "weights",
-  "workouts",
-  "nutrition",
-  "habits",
-  "dates",
-  "commitments",
-  "weeklyReflections",
-] as const;
 type RecordValue = Record<string, unknown>;
 function object(value: unknown): RecordValue {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -56,10 +50,7 @@ function num(
 }
 function date(v: unknown, label: string) {
   text(v, label);
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(v as string) ||
-    localDate(new Date(`${v}T12:00:00`)) !== v
-  )
+  if (!isCalendarDate(v))
     throw new Error(`${label} must be a real YYYY-MM-DD date.`);
 }
 function bool(v: unknown, label: string) {
@@ -75,9 +66,12 @@ function grade(v: unknown) {
 export function validateWorkspace(value: unknown): State {
   const root = object(value);
   const schema = root.schemaVersion === undefined ? 1 : root.schemaVersion;
-  if (!Number.isInteger(schema) || ![1, 2, 3, 4, 5].includes(schema as number))
+  if (
+    !Number.isInteger(schema) ||
+    ![1, 2, 3, 4, 5, 6].includes(schema as number)
+  )
     throw new Error(
-      "Unsupported workspace schema. Supported versions: 1, 2, 3, 4, 5.",
+      "Unsupported workspace schema. Supported versions: 1, 2, 3, 4, 5, 6.",
     );
   for (const key of collections) {
     if (
@@ -324,9 +318,22 @@ export function validateWorkspace(value: unknown): State {
         throw new Error("This fitness goal must be a whole number.");
     }
   }
+  if (schema === SCHEMA_VERSION)
+    for (const key of LEGACY_ID_COLLECTIONS)
+      for (const value of root[key] as RecordValue[])
+        text(value.id, "Record ID");
+  const identified = addLegacyIds(root);
+  for (const key of LEGACY_ID_COLLECTIONS) {
+    const ids = new Set();
+    for (const value of identified[key] as RecordValue[]) {
+      text(value.id, "Record ID");
+      if (ids.has(value.id)) throw new Error(`Duplicate ID in ${key}.`);
+      ids.add(value.id);
+    }
+  }
   // Keep every unknown field, at every nesting level. No reconstruction from a field allowlist.
   return {
-    ...root,
+    ...identified,
     commitments: root.commitments ?? [],
     weeklyReflections: root.weeklyReflections ?? [],
     schemaVersion: SCHEMA_VERSION,
@@ -388,12 +395,26 @@ export function persist(
 ) {
   const validated = validateWorkspace(next);
   const json = JSON.stringify(validated);
-  if (reason) {
+  const originalRaw = store.getItem(STORAGE_KEY);
+  let originalSchema: unknown = SCHEMA_VERSION;
+  try {
+    originalSchema = originalRaw
+      ? JSON.parse(originalRaw).schemaVersion
+      : SCHEMA_VERSION;
+  } catch {
+    originalSchema = null;
+  }
+  const backupReason =
+    reason ||
+    (originalRaw && originalSchema !== SCHEMA_VERSION
+      ? "Before migrating workspace to schema 6"
+      : undefined);
+  if (backupReason) {
     const before = store.getItem(STORAGE_KEY) ?? JSON.stringify(current);
     const snapshot: Snapshot = {
       id: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
-      reason,
+      reason: backupReason,
       raw: before,
     };
     store.setItem(

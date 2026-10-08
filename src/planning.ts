@@ -1,21 +1,16 @@
+import { recurringOn } from "./domain/scheduling";
+import { weekday } from "./dates";
 import type { State, Commitment, WeeklyReflection, FitnessGoals } from "./data";
 import { day } from "./dates";
 import { offsetDate } from "./personal";
 import { scheduled } from "./daily";
 import { validateWorkspace } from "./safety";
 export function weekStart(date = day()) {
-  return offsetDate(date, -((new Date(date + "T12:00:00").getDay() + 6) % 7));
+  return offsetDate(date, -((weekday(date) + 6) % 7));
 }
 export function commitmentsOn(state: State, date: string) {
-  const weekday = new Date(date + "T12:00:00").getDay();
   return state.commitments
-    .filter(
-      (c) =>
-        c.startsOn <= date &&
-        (!c.endsOn || c.endsOn >= date) &&
-        c.days.includes(weekday) &&
-        !c.exceptions.includes(date),
-    )
+    .filter((c) => recurringOn(c, date))
     .sort(
       (a, b) =>
         a.startTime.localeCompare(b.startTime) || a.name.localeCompare(b.name),

@@ -1,21 +1,15 @@
-import { parseExportStatus } from "./daily";
-import { useState, useRef } from "react";
-import {
-  EXPORT_STATUS_KEY,
-  workspaceContent,
-  type ExportStatus,
-} from "./daily";
+import { preferences } from "./persistence/preferences";
+import type { WorkspaceRepository } from "./persistence/repository";
+import { useState, useRef, useEffect } from "react";
+import { workspaceContent, type ExportStatus } from "./daily";
 import type { State } from "./data";
 import {
   exportWorkspace,
   backupFilename,
   parseImport,
   summary,
-  snapshots,
   SCHEMA_VERSION,
-  EXPORT_KEY,
   MAX_IMPORT_BYTES,
-  STORAGE_KEY,
   type Snapshot,
 } from "./safety";
 export function downloadJson(raw: string, filename: string) {
@@ -34,7 +28,9 @@ export default function DataBackup({
   onReplace,
   onClear,
   onExportChange,
+  repository,
 }: {
+  repository: WorkspaceRepository;
   data: State;
   loadError: string;
   onReplace: (next: State, reason: string) => Promise<boolean>;
@@ -53,14 +49,32 @@ export default function DataBackup({
   const [clear, setClear] = useState(false);
   const [phrase, setPhrase] = useState("");
   const [revision, refresh] = useState(0);
-  let history: Snapshot[] = [];
-  let storageError = "";
+  const [history, setHistory] = useState<Snapshot[]>([]);
+  const [backupError, setBackupError] = useState("");
+  useEffect(() => {
+    let active = true;
+    repository
+      .listSnapshots()
+      .then((list) => {
+        if (active) {
+          setHistory(list);
+          setBackupError("");
+        }
+      })
+      .catch((e) => {
+        if (active) setBackupError((e as Error).message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [repository, revision, data]);
+  let storageError = backupError;
   let lastExport: string | null = null;
   let status: ExportStatus | null = null;
   try {
-    history = snapshots(localStorage);
-    lastExport = localStorage.getItem(EXPORT_KEY);
-    status = parseExportStatus(localStorage.getItem(EXPORT_STATUS_KEY));
+    const metadata = preferences.exportInfo();
+    lastExport = metadata.lastExport;
+    status = metadata.status;
   } catch (e) {
     storageError = (e as Error).message;
   }
@@ -93,12 +107,11 @@ export default function DataBackup({
         backupFilename(now),
       );
       try {
-        localStorage.setItem(EXPORT_KEY, now.toISOString());
         const metadata: ExportStatus = {
           requestedAt: now.toISOString(),
           content: workspaceContent(data),
         };
-        localStorage.setItem(EXPORT_STATUS_KEY, JSON.stringify(metadata));
+        preferences.recordExport(metadata);
         onExportChange(metadata);
         setConfirmationPending(true);
       } catch {
@@ -170,10 +183,10 @@ export default function DataBackup({
           {loadError && (
             <button
               className="secondary"
-              onClick={() => {
+              onClick={async () => {
                 try {
                   downloadJson(
-                    localStorage.getItem(STORAGE_KEY) || "null",
+                    (await repository.original()) || "null",
                     "dylan-os-original-data.json",
                   );
                 } catch (e) {
@@ -211,7 +224,7 @@ export default function DataBackup({
             />
           </label>
           <p className="row-meta">
-            Schemas 1–5 supported · maximum 5 MB · legacy workspace JSON
+            Schemas 1–6 supported · maximum 5 MB · legacy workspace JSON
             accepted.
           </p>
         </section>
@@ -327,10 +340,7 @@ export default function DataBackup({
                     ...status,
                     confirmedAt: new Date().toISOString(),
                   };
-                  localStorage.setItem(
-                    EXPORT_STATUS_KEY,
-                    JSON.stringify(saved),
-                  );
+                  preferences.confirmExport(saved);
                   onExportChange(saved);
                   setConfirmationPending(false);
                   setMessage(

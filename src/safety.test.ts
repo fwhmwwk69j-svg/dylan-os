@@ -47,7 +47,7 @@ describe("export and import", () => {
       "dates",
       "goalWeight",
     ] as const)
-      expect(exported[key]).toEqual(s[key]);
+      expect(exported[key]).toEqual(validateWorkspace(s)[key]);
     expect(parseImport(JSON.stringify(exported))).toEqual(exported);
     expect(exported).toMatchObject({ custom: s.custom });
     expect(backupFilename(new Date(2026, 9, 7))).toBe(
@@ -59,11 +59,11 @@ describe("export and import", () => {
     (schemaVersion) => {
       const s = { ...sampleData(), schemaVersion };
       const loaded = parseImport(JSON.stringify(s));
-      expect(loaded).toEqual({ ...s, schemaVersion: 5 });
+      expect(loaded).toEqual(validateWorkspace(s));
       expect(loaded.tasks[0].completedOn).toBeUndefined();
     },
   );
-  it.each([0, 6, 999, "3", null])(
+  it.each([0, 7, 999, "3", null])(
     "rejects unsupported schema %s",
     (schemaVersion) => {
       expect(() =>
@@ -137,7 +137,7 @@ describe("snapshots and clearing", () => {
     const snapshot = snapshots(storage)[0];
     expect(JSON.parse(snapshot.raw)).toEqual(original);
     const restored = restoreSnapshot(storage, emptyWorkspace(), snapshot);
-    expect(restored).toEqual({ ...original, schemaVersion: 5 });
+    expect(restored).toEqual(validateWorkspace(original));
     expect(snapshots(storage)[0].reason).toBe("Before restoring backup");
     expect(JSON.parse(snapshots(storage)[0].raw).tasks).toHaveLength(0);
   });
@@ -162,7 +162,7 @@ describe("snapshots and clearing", () => {
     expect(() => clearWorkspace(storage, s, "CLEAR")).toThrow();
     expect(snapshots(storage)).toHaveLength(0);
     const cleared = clearWorkspace(storage, s, "CLEAR MY WORKSPACE");
-    expect(cleared).toEqual({ ...emptyWorkspace(), schemaVersion: 5 });
+    expect(cleared).toEqual({ ...emptyWorkspace(), schemaVersion: 6 });
     expect(JSON.parse(snapshots(storage)[0].raw)).toEqual(s);
     expect(snapshots(storage)[0].reason).toBe("Before clearing workspace");
   });
@@ -224,7 +224,7 @@ describe("temporary deletion undo", () => {
   it.each(["tasks", "assignments", "workouts", "habits", "dates"] as const)(
     "restores deleted %s and preserves intervening changes",
     (key) => {
-      const before = sampleData();
+      const before = validateWorkspace(sampleData());
       const after = { ...before, [key]: before[key].slice(1) };
       const entry = deletion(before, after, key, 1000);
       const current = { ...after, goalWeight: 160 };
@@ -235,7 +235,7 @@ describe("temporary deletion undo", () => {
     },
   );
   it("restores a course together with all linked school work and unknown metadata", () => {
-    const before = sampleData();
+    const before = validateWorkspace(sampleData());
     Object.assign(before.courses[0], { unknown: "keep" });
     before.assignments.push({
       ...before.assignments[0],
@@ -258,7 +258,7 @@ describe("temporary deletion undo", () => {
     );
   });
   it("keeps a task added after deletion and edits to surviving tasks", () => {
-    const before = sampleData();
+    const before = validateWorkspace(sampleData());
     const after = { ...before, tasks: before.tasks.slice(1) };
     const entry = deletion(before, after, "task", 1000);
     const current = {
@@ -278,14 +278,14 @@ describe("temporary deletion undo", () => {
     );
   });
   it("expires after 30 seconds", () => {
-    const before = sampleData();
+    const before = validateWorkspace(sampleData());
     const after = { ...before, tasks: before.tasks.slice(1) };
     expect(() =>
       undoDeletion(after, deletion(before, after, "task", 1000), 31000),
     ).toThrow("expired");
   });
   it("refuses to overwrite a conflicting newer record", () => {
-    const before = sampleData();
+    const before = validateWorkspace(sampleData());
     const after = { ...before, tasks: before.tasks.slice(1) };
     const entry = deletion(before, after, "task", 1000);
     const current = {
