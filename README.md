@@ -1,6 +1,6 @@
 # Dylan OS
 
-A personal operating system for a more intentional day. Version 1.5.1 is a responsive React + TypeScript application with a calm green design, light and dark modes, and a personal workspace that starts empty. Existing Version 1, 1.1, 1.2, 1.3, and 1.4 records are preserved.
+A personal operating system for a more intentional day. Version 1.5.2 is a responsive React + TypeScript application with a calm green design, light and dark modes, and a personal workspace that starts empty. Existing Version 1, 1.1, 1.2, 1.3, and 1.4 records are preserved.
 
 ## Run locally
 
@@ -86,7 +86,7 @@ See [the revised cloud roadmap](docs/cloud-migration.md) and [proposed relationa
 
 ## Validation
 
-Run `npm test` and `npm run build`. The 158 automated tests cover existing planner, fitness, personalization and recovery functionality plus schema 1–5 migration, stable identity/idempotence, unknown-field preservation, old-backup round trips, first-write migration snapshots, storage failures, repository conflicts, extracted commands, course-linked Undo, calendar/timezone boundaries, owner-scoped relationships and inactive AI/module contracts. Desktop/mobile regression checks exercise planner and Today connections, quick add, habits, fitness logs/goals, reflections, export/import/restore/clear, Undo and real simultaneous browser-tab writes.
+Run `npm test` and `npm run build`. The 173 automated tests cover existing planner, fitness, personalization and recovery functionality plus schema 1–5 migration, stable identity/idempotence, unknown-field preservation, old-backup round trips, first-write migration snapshots, storage failures, repository conflicts, extracted commands, course-linked Undo, calendar/timezone boundaries, owner-scoped relationships and inactive AI/module contracts. Desktop/mobile regression checks exercise planner and Today connections, quick add, habits, fitness logs/goals, reflections, export/import/restore/clear, Undo and real simultaneous browser-tab writes.
 
 An optional repeatable Chromium regression lives in `scripts/browser-smoke.cjs`. With Playwright and Chromium installed, start `npm run preview` after the build, then run `node scripts/browser-smoke.cjs`. Set `PLAYWRIGHT_MODULE`, `BROWSER_EXECUTABLE` or `DYLAN_PREVIEW_URL` when those differ from the defaults. The script uses only synthetic data in an isolated browser context and checks legacy migrations, exact pre-migration snapshots, old import, habit/date Undo and mobile navigation. Playwright is optional and is not an application dependency.
 
@@ -94,4 +94,10 @@ An optional repeatable Chromium regression lives in `scripts/browser-smoke.cjs`.
 
 This remains a single-user local application. There is no authentication, cloud database, upload, external integration, billing or paid AI. Keep exported backup files outside browser storage; snapshots share the browser origin and do not protect against clearing all browser data.
 
-Recommended **Version 1.5.2**, subject to separate approval: staging-only Supabase Auth/private relational tables for current domains, RLS, authenticated atomic commands/revisions/snapshots, synthetic two-user security tests and account/session lifecycle foundations. Preserve the local adapter and UI. Exclude real-data migration and production activation until 1.5.3; exclude AI, billing and integrations. Version 1.5.2 has not begun.
+The approved **Version 1.5.2** staging scope: staging-only Supabase Auth/private relational tables for current domains, RLS, authenticated atomic commands/revisions/snapshots, synthetic two-user security tests and account/session lifecycle foundations. Preserve the local adapter and UI. Exclude real-data migration and production activation until 1.5.3; exclude AI, billing and integrations. Backend implementation and setup instructions are now included below; hosted deployment remains unverified.
+
+## Version 1.5.2: secure backend foundation (staging only)
+
+The app still opens into the same localStorage workspace; no account UI, upload or automatic cloud switch was added. New Supabase SQL migrations define private relational records, forced account RLS, owner-scoped relationships, active-session/allowlist checks, revision-safe atomic commands and five account recovery snapshots. A separate memory-only staging client clears account caches and rejects late responses. It is not imported by App or bundled into the production UI.
+
+Run `npm test` / `npm run build` for the app. Real local PostgreSQL policies and PostgREST JWT/API tests run with `npm run test:db` and `npm run test:api` after their disposable Docker services start. `npm run test:staging` requires secure hosted configuration; missing credentials report hosted tests as skipped, not passed. See [exact staging setup, validation limits, rollback and 1.5.3 scope](docs/staging-setup.md). All backend fixtures are synthetic. Privileged keys stay in server/operator environments, never browser code.

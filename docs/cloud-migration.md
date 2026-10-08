@@ -67,3 +67,7 @@ Account deletion requires reauthentication/strong confirmation, immediately disa
 **Do not begin 1.5.2 without approval.** Its scope excludes importing real personal data, activating production cloud mode, paid AI, billing, external integrations, sharing UI or a visual redesign. Use normalized tables for existing domains first, not speculative implementations of all future features.
 
 Real-data migration in 1.5.3 must be explicit and reversible: verify a downloaded backup, preview source/destination, obtain upload approval, validate and transact, re-read and compare IDs/counts/history/goals/preferences/extensions, then switch adapters. If the destination already has data, require an explicit replacement choice and backup it first; automatic merge is out of scope. Failed/cancelled migration leaves original local data usable.
+
+## Version 1.5.2 implementation status
+
+Staging backend code now exists in `supabase/migrations`: typed owned domain tables, forced owner-read RLS, composite academic FKs, active-session/administrator-allowlist checks, transactional expected-revision commands and account-scoped snapshot restore. LocalStorage remains the only repository constructed by App. See [staging setup and verification](staging-setup.md) and [the server boundary](../backend/README.md). No hosted deployment or real-data upload has happened. Hosted security is unverified until the separate credentialed runner passes; local PostgreSQL/PostgREST tests are distinct evidence.

@@ -1,14 +1,17 @@
 {
   "name": "dylan-os",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "vitest run",
-    "format": "prettier --write ."
+    "test": "vitest run src",
+    "format": "prettier --write .",
+    "test:db": "./scripts/db-local.sh test",
+    "test:staging": "node --test scripts/staging-api.test.mjs",
+    "test:api": "node --test scripts/local-api.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.3.0",
@@ -22,6 +25,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "pg": "^8.16.3",
     "prettier": "^3.9.9",
     "typescript": "^7.0.2",
     "vite": "^8.3.3",
