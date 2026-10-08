@@ -1,36 +1,11 @@
+import { validateWorkspace, emptyWorkspace } from "./safety";
 import { day, localDate } from "./dates";
 import type { State, Task, Assignment } from "./data";
-export const STORAGE_KEY = "dylan-os-v1";
-export function emptyWorkspace(): State {
-  return {
-    tasks: [],
-    courses: [],
-    assignments: [],
-    weights: [],
-    workouts: [],
-    goalWeight: null,
-    habits: [],
-    nutrition: [],
-    dates: [],
-  };
-}
+export { STORAGE_KEY, emptyWorkspace } from "./safety";
 // Additive migration: never reseed or silently discard the user's Version 1 records.
 export function restoreWorkspace(raw: string | null): State {
   if (!raw) return emptyWorkspace();
-  const parsed = JSON.parse(raw);
-  for (const key of [
-    "tasks",
-    "courses",
-    "assignments",
-    "weights",
-    "workouts",
-    "habits",
-    "nutrition",
-    "dates",
-  ])
-    if (!Array.isArray(parsed[key]))
-      throw new Error("Workspace data is invalid.");
-  return { ...parsed, schemaVersion: 2 };
+  return validateWorkspace(JSON.parse(raw));
 }
 export function offsetDate(date: string, offset: number) {
   const d = new Date(date + "T12:00:00");

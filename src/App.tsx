@@ -27,6 +27,7 @@ import {
   Menu,
   Target,
   TrendingUp,
+  ShieldCheck,
 } from "lucide-react";
 import {
   day,
@@ -50,19 +51,34 @@ import {
   toggleHabit,
   removeCourse,
 } from "./personal";
+import DataBackup from "./DataBackup";
+import {
+  persist,
+  clearWorkspace,
+  deletion,
+  undoDeletion,
+  type Deletion,
+} from "./safety";
 import WeeklyReview from "./WeeklyReview";
 const WeightChart = lazy(() => import("./Charts"));
 const BenchChart = lazy(() =>
   import("./Charts").then((module) => ({ default: module.BenchChart })),
 );
 type Page =
-  "Today" | "College" | "Fitness" | "Tasks" | "AI Assistant" | "Weekly Review";
+  | "Today"
+  | "College"
+  | "Fitness"
+  | "Tasks"
+  | "AI Assistant"
+  | "Weekly Review"
+  | "Data & Backup";
 const navigation = [
   { name: "Today" as Page, icon: Sun },
   { name: "College" as Page, icon: GraduationCap },
   { name: "Fitness" as Page, icon: Dumbbell },
   { name: "Tasks" as Page, icon: CheckCheck },
   { name: "AI Assistant" as Page, icon: Sparkles },
+  { name: "Data & Backup" as Page, icon: ShieldCheck },
 ];
 const formatDate = (date: string) =>
   new Date(date + "T12:00:00").toLocaleDateString("en-US", {
@@ -127,6 +143,8 @@ function Empty({ children }: { children: ReactNode }) {
 export default function App() {
   const dialogRef = useRef<HTMLElement>(null);
   const [initial] = useState(load);
+  const [loadError, setLoadError] = useState(initial.error);
+  const [undo, setUndo] = useState<Deletion | null>(null);
   const [data, setData] = useState<State>(initial.data);
   const [editHabit, setEditHabit] = useState<number | null>(null);
   const [editDate, setEditDate] = useState<number | null>(null);
@@ -210,24 +228,62 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
   document.documentElement.dataset.theme = theme;
-  function update(next: State) {
-    if (initial.error) {
-      setNotice(initial.error);
-      return;
+  function update(next: State, reason?: string, recovery = false): boolean {
+    if (loadError && !recovery) {
+      setNotice(loadError);
+      return false;
     }
-    setData(next);
     try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ ...next, schemaVersion: 2 }),
+      const editing =
+        (modal === "task" && editTask) ||
+        (modal === "course" && selectedCourse) ||
+        (modal === "assignment" && editAssignment) ||
+        (modal === "habit" && editHabit !== null) ||
+        (modal === "date" && editDate !== null) ||
+        (modal === "weight" &&
+          data.weights.some((w) => w.date === next.weights.at(-1)?.date)) ||
+        (modal === "nutrition" &&
+          data.nutrition.some((n) => n.date === next.nutrition.at(-1)?.date));
+      const saved = persist(
+        localStorage,
+        data,
+        next,
+        reason || (editing ? `Before editing ${modal}` : undefined),
       );
+      setData(saved);
+      setLoadError("");
       setNotice("");
-    } catch {
-      setNotice(
-        "Storage is unavailable. Changes will last only for this session.",
-      );
+      return true;
+    } catch (e) {
+      setNotice(`Nothing was changed: ${(e as Error).message}`);
+      return false;
     }
   }
+  function deleteRecords(next: State, label: string) {
+    const entry = deletion(data, next, label);
+    if (update(next, `Before deleting ${label}`)) {
+      setUndo(entry);
+      closeModal();
+      setCourseId(null);
+    }
+  }
+  function undoLast() {
+    if (!undo) return;
+    try {
+      const next = undoDeletion(data, undo);
+      if (update(next, `Before undoing ${undo.label}`)) setUndo(null);
+    } catch (e) {
+      setNotice((e as Error).message);
+    }
+  }
+  useEffect(() => {
+    if (!undo) return;
+    const timer = setTimeout(
+      () => setUndo(null),
+      Math.max(0, undo.expiresAt - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [undo]);
   function navigate(next: Page) {
     setPage(next);
     setCourseId(null);
@@ -378,6 +434,7 @@ export default function App() {
     const number = (k: string) => Number(f.get(k));
     if (modal === "task") {
       const t: Task = {
+        ...editTask,
         id: editTask?.id || uid(),
         name: value("name").trim(),
         category: value("category"),
@@ -397,6 +454,7 @@ export default function App() {
     }
     if (modal === "course") {
       const c = {
+        ...selectedCourse,
         id: selectedCourse?.id || uid(),
         name: value("name").trim(),
         code: value("code").trim(),
@@ -414,6 +472,7 @@ export default function App() {
     }
     if (modal === "assignment") {
       const a: Assignment = {
+        ...editAssignment,
         id: editAssignment?.id || uid(),
         name: value("name").trim(),
         courseId: value("courseId"),
@@ -433,7 +492,11 @@ export default function App() {
       });
     }
     if (modal === "weight") {
-      const entry = { date: value("date"), value: number("weight") };
+      const entry = {
+        ...data.weights.find((w) => w.date === value("date")),
+        date: value("date"),
+        value: number("weight"),
+      };
       update({
         ...data,
         weights: [...data.weights.filter((w) => w.date !== entry.date), entry],
@@ -469,6 +532,7 @@ export default function App() {
     }
     if (modal === "nutrition") {
       const entry = {
+        ...data.nutrition.find((n) => n.date === value("date")),
         date: value("date"),
         calories: number("calories"),
         protein: number("protein"),
@@ -507,7 +571,11 @@ export default function App() {
       });
     }
     if (modal === "date") {
-      const date = { name: value("name").trim(), date: value("date") };
+      const date = {
+        ...(editDate === null ? {} : data.dates[editDate]),
+        name: value("name").trim(),
+        date: value("date"),
+      };
       if (!date.name) return;
       update({
         ...data,
@@ -1048,6 +1116,34 @@ export default function App() {
               </div>
             </>
           )}
+          {page === "Data & Backup" && (
+            <DataBackup
+              data={data}
+              loadError={loadError}
+              onReplace={(next, reason) => {
+                if (update(next, reason, true)) {
+                  setUndo(null);
+                  setMessages([]);
+                  return true;
+                }
+                return false;
+              }}
+              onClear={(phrase) => {
+                try {
+                  const next = clearWorkspace(localStorage, data, phrase);
+                  setData(next);
+                  setLoadError("");
+                  setNotice("");
+                  setUndo(null);
+                  setMessages([]);
+                  return true;
+                } catch (e) {
+                  setNotice(`Nothing was cleared: ${(e as Error).message}`);
+                  return false;
+                }
+              }}
+            />
+          )}
           {page === "Weekly Review" && (
             <WeeklyReview
               data={data}
@@ -1212,6 +1308,9 @@ export default function App() {
                       <textarea
                         className="notes"
                         aria-label="Course notes"
+                        onFocus={() =>
+                          update(data, "Before editing course notes")
+                        }
                         value={selectedCourse.notes}
                         onChange={(e) =>
                           update({
@@ -1395,6 +1494,7 @@ export default function App() {
                         <th>Exercise</th>
                         <th>Set</th>
                         <th>Status</th>
+                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1429,6 +1529,25 @@ export default function App() {
                                 }
                               >
                                 {w.completed ? "Completed" : "Planned"}
+                              </button>
+                            </td>
+                            <td>
+                              <button
+                                className="danger text-button"
+                                aria-label={`Delete workout ${w.name}`}
+                                onClick={() =>
+                                  deleteRecords(
+                                    {
+                                      ...data,
+                                      workouts: data.workouts.filter(
+                                        (x) => x.id !== w.id,
+                                      ),
+                                    },
+                                    "workout",
+                                  )
+                                }
+                              >
+                                Delete
                               </button>
                             </td>
                           </tr>
@@ -1651,10 +1770,25 @@ export default function App() {
             <span>
               Dylan OS <span>·</span> A little better, every day.
             </span>
-            <span>V1.1 · Your workspace · Stored on this device</span>
+            <span>V1.2 · Your workspace · Stored on this device</span>
           </footer>
         </div>
       </main>
+      {undo && (
+        <div className="undo-toast" role="status">
+          <span>Deleted {undo.label}. Undo available for 30 seconds.</span>
+          <button className="secondary" onClick={undoLast}>
+            Undo deletion
+          </button>
+          <button
+            className="icon-button"
+            aria-label="Dismiss undo"
+            onClick={() => setUndo(null)}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
       {modal && (
         <div className="modal-backdrop" onClick={() => closeModal()}>
           <section
@@ -2155,13 +2289,13 @@ export default function App() {
                       onClick={() => {
                         if (
                           window.confirm(
-                            `Delete ${selectedCourse.name} and its assignments/exams? This cannot be undone.`,
+                            `Delete ${selectedCourse.name} and its linked school work? A snapshot and temporary Undo are available.`,
                           )
-                        ) {
-                          update(removeCourse(data, selectedCourse.id));
-                          setModal(null);
-                          setCourseId(null);
-                        }
+                        )
+                          deleteRecords(
+                            removeCourse(data, selectedCourse.id),
+                            "course and linked school work",
+                          );
                       }}
                     >
                       Delete course
@@ -2171,15 +2305,17 @@ export default function App() {
                     <button
                       type="button"
                       className="danger text-button"
-                      onClick={() => {
-                        update({
-                          ...data,
-                          assignments: data.assignments.filter(
-                            (a) => a.id !== editAssignment.id,
-                          ),
-                        });
-                        setModal(null);
-                      }}
+                      onClick={() =>
+                        deleteRecords(
+                          {
+                            ...data,
+                            assignments: data.assignments.filter(
+                              (a) => a.id !== editAssignment.id,
+                            ),
+                          },
+                          "assignment/exam",
+                        )
+                      }
                     >
                       Delete assignment
                     </button>
@@ -2188,21 +2324,17 @@ export default function App() {
                     <button
                       type="button"
                       className="danger text-button"
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            "Delete this habit and its check-in history?",
-                          )
-                        ) {
-                          update({
+                      onClick={() =>
+                        deleteRecords(
+                          {
                             ...data,
                             habits: data.habits.filter(
                               (h, i) => i !== editHabit,
                             ),
-                          });
-                          setModal(null);
-                        }
-                      }}
+                          },
+                          "habit",
+                        )
+                      }
                     >
                       Delete habit
                     </button>
@@ -2211,13 +2343,15 @@ export default function App() {
                     <button
                       type="button"
                       className="danger text-button"
-                      onClick={() => {
-                        update({
-                          ...data,
-                          dates: data.dates.filter((d, i) => i !== editDate),
-                        });
-                        setModal(null);
-                      }}
+                      onClick={() =>
+                        deleteRecords(
+                          {
+                            ...data,
+                            dates: data.dates.filter((d, i) => i !== editDate),
+                          },
+                          "important date",
+                        )
+                      }
                     >
                       Delete date
                     </button>
@@ -2226,14 +2360,17 @@ export default function App() {
                     <button
                       type="button"
                       className="danger text-button"
-                      onClick={() => {
-                        update({
-                          ...data,
-                          tasks: data.tasks.filter((t) => t.id !== editTask.id),
-                        });
-                        closeModal();
-                        setEditTask(null);
-                      }}
+                      onClick={() =>
+                        deleteRecords(
+                          {
+                            ...data,
+                            tasks: data.tasks.filter(
+                              (t) => t.id !== editTask.id,
+                            ),
+                          },
+                          "task",
+                        )
+                      }
                     >
                       Delete task
                     </button>

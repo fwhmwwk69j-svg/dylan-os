@@ -1,6 +1,6 @@
 # Dylan OS
 
-A personal operating system for a more intentional day. Version 1.1 is a responsive React + TypeScript application with a calm green design, light and dark modes, and a personal workspace that starts empty. Existing Version 1 records are preserved.
+A personal operating system for a more intentional day. Version 1.2 is a responsive React + TypeScript application with a calm green design, light and dark modes, and a personal workspace that starts empty. Existing Version 1 and 1.1 records are preserved.
 
 ## Run locally
 
@@ -23,7 +23,7 @@ npm test          # connected data, recurrence, averages, assistant context
 npm run format   # format source and configuration
 ```
 
-## Version 1.1
+## Current workflow
 
 - **Today:** overdue tasks first, due-today tasks, separate upcoming assignments and exams (next 14 days plus all overdue work), today's workout, editable daily habits, weight progress, editable important dates, and quick add. Urgency labels distinguish overdue, today, tomorrow, and the next three days. The dashboard refreshes its date when left open overnight.
 - **College:** add your real courses, edit their details, leave grades blank until known, and maintain course notes. Add/edit/delete assignments and exams with optional recorded grades and notes. Open a course and choose **Edit course** to replace old demo details; **Delete course** confirms removal of the course and its linked school work. Existing courses are never silently deleted.
@@ -37,9 +37,23 @@ All edits use the same browser `localStorage` key (`dylan-os-v1`), with theme un
 
 New browsers start with no fabricated courses, deadlines, workouts, weight, nutrition, or habits. The sample fixture remains only for automated tests. Clearing site data deletes the workspace; data is specific to the browser/origin and is not backed up or synchronized. No authentication or database is connected.
 
+## Data safety and recovery (Version 1.2)
+
+Open **Data & Backup** in the sidebar or mobile navigation.
+
+1. **Export workspace** downloads `dylan-os-backup-YYYY-MM-DD.json`. It contains the full workspace, schema version 3, and an ISO export timestamp, including unknown fields. Store this file outside the browser. The page tracks when a download was requested; browsers cannot confirm that the file was saved.
+2. **Import workspace** accepts JSON exports and legacy raw workspace JSON (schemas 1, 2, and 3, including unversioned V1 data). Files are limited to 5 MB. The validator checks every collection and record, field types, real calendar dates, numeric ranges, IDs, duplicate dated logs, course links, and supported schema versions. Invalid files do not write anything. Valid files show a count preview; checking the replacement acknowledgment and pressing **Confirm replacement** are both required.
+3. **Local snapshots** preserve the exact previous stored JSON before imports, restores, clearing, deletions, and saved record edits. Course notes take a snapshot at the start of an editing session. Only the five newest snapshots are kept. **Restore backup** goes through validation, preview, and confirmation, then snapshots the workspace it replaces. Original snapshot JSON can also be downloaded.
+4. **Undo deletion** is available for 30 seconds after the latest task, course, assignment/exam, workout, habit, or important-date deletion. Course Undo restores linked school work too. Undo merges deleted records into current data instead of rolling back edits made afterward; it refuses conflicting IDs/records. Older deletions can be recovered through retained snapshots, which replace the whole workspace after confirmation.
+5. **Clear workspace** requires opening the clear controls, typing `CLEAR MY WORKSPACE` exactly, and pressing the final confirmation. A snapshot must be saved immediately beforehand. Theme, export status, and existing snapshots remain.
+
+Workspace writes are committed to the UI only after storage succeeds. If snapshot creation fails (for example, storage is full), the destructive operation is blocked. If the final workspace write fails, the old workspace and the newly created recovery snapshot remain. Corrupt or unsupported saved workspace data is not silently reset: ordinary edits are blocked, original data can be downloaded, and a validated replacement can be confirmed explicitly. Unknown workspace and nested record fields survive loading, export/import, edits, and Undo; known schema versions migrate additively to 3.
+
+Storage keys: `dylan-os-v1` (workspace, unchanged), `dylan-os-backups-v1` (snapshots), `dylan-os-last-export` (last export request), and `dylan-theme` (theme). Local snapshots are not off-device backups. Clearing browser site data or losing the device also loses those snapshots.
+
 ## Architecture and future integrations
 
-`src/data.ts` defines typed domain entities, the test sample fixture, recurrence/average calculations, and the `AssistantProvider` contract. `src/dates.ts` handles local calendar dates. `src/personal.ts` owns additive restoration, urgency, completion tracking, and review calculations; `src/WeeklyReview.tsx` renders the review. Tasks, courses, assignments, workouts, and dated logs use stable IDs and explicit relationships. `src/App.tsx` owns the shared state and renders the five areas; `src/Charts.tsx` loads charts on demand, and `src/styles.css` contains responsive layouts and theme variables. Fonts are bundled locally, so the application makes no external font requests. Existing data tests exercise cross-area behavior.
+`src/data.ts` defines typed domain entities, the test sample fixture, recurrence/average calculations, and the `AssistantProvider` contract. `src/dates.ts` handles local calendar dates. `src/safety.ts` owns shared validation, exports, snapshot rotation, safe writes, restoration, and deletion Undo. `src/DataBackup.tsx` renders the data controls. `src/personal.ts` owns workspace initialization, urgency, completion tracking, and review calculations; `src/WeeklyReview.tsx` renders the review. Tasks, courses, assignments, workouts, and dated logs use stable IDs and explicit relationships. `src/App.tsx` owns the shared state and renders the five core areas and Data & Backup; `src/Charts.tsx` loads charts on demand, and `src/styles.css` contains responsive layouts and theme variables. Fonts are bundled locally, so the application makes no external font requests. Existing data tests exercise cross-area behavior.
 
 Future database work should replace local persistence with a repository/service layer and user-scoped entities while preserving these domain contracts. Add authentication and server authorization before sharing or syncing private records. Calendar, task-manager, and fitness integrations can normalize their data into the same entities with external source IDs and explicit timezone handling.
 
@@ -47,10 +61,10 @@ The future AI provider should call an authenticated server endpoint, load only t
 
 ## Validation
 
-The automated suites cover V1 compatibility, blank workspaces, malformed storage rejection, completion timestamps, recurrence, urgency boundaries, overdue ordering, calendar boundaries, course cleanup, workout counting, logged-day step averages, weight trends, habit opportunities, and assistant context. Production browser smoke checks additionally cover fresh and legacy workspaces, quick-entry flows, grade/notes editing, persistence, weekly-review calculations, and desktop/mobile layouts.
+The 68 automated tests cover export structure, full import validation, unsupported schemas, restore, backup rotation, storage-failure safety, clear confirmation, deletion Undo, course-linked restoration, V1 compatibility, blank workspaces, malformed storage rejection, completion timestamps, recurrence, urgency boundaries, overdue ordering, calendar boundaries, course cleanup, workout counting, logged-day step averages, weight trends, habit opportunities, and assistant context. Production desktop/mobile browser smoke checks cover real file downloads, import rejection/cancellation/confirmation, every deletion Undo, snapshots, clearing and restoring, storage quota failure, and preserved unknown fields. V1.1 smoke checks also cover fresh and legacy workspaces, quick-entry flows, grade/notes editing, persistence, weekly-review calculations, and desktop/mobile layouts.
 
 ## Scope
 
 This is a single-user local system. Authentication, database persistence, cloud sync, integrations, paid AI, calculated course grades, and advanced workout programming remain follow-on work. There is no backend service to operate. Recorded course grades are manual; assignment grades do not automatically recalculate a course grade.
 
-The logical Version 1.2 is data portability and recovery: validated JSON export/import, a backup reminder, and reversible deletion. That protects real personal records without adding a database or account system.
+Recommended Version 1.3 scope: prevent stale writes across browser tabs; add a configurable weekly export reminder that shows whether data changed since the last export request; add correction/editing of historical weight and nutrition logs using existing snapshot and Undo protections. Keep authentication, cloud storage, integrations, and paid AI out of that release.
