@@ -1,4 +1,8 @@
-import { test, before, after } from "node:test";
+import { test, before, after, describe } from "node:test";
+import { randomUUID } from "node:crypto";
+import { operationCases } from "./hosted-operation-cases.mjs";
+import { safeTest, sanitized } from "./staging-safety.mjs";
+const operationAccounts = [];
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import pg from "pg";
@@ -102,6 +106,24 @@ after(async () => {
   await admin.query("delete from auth.users where id=any($1::uuid[])", [
     [A, B],
   ]);
+  for (const id of operationAccounts) {
+    await admin.query("delete from auth.sessions where user_id=$1", [id]);
+    await admin.query("delete from auth.users where id=$1", [id]);
+    for (const table of [
+      "account_workspaces",
+      "workspace_operation_receipts",
+      "workspace_deletion_receipts",
+    ])
+      assert.equal(
+        (
+          await admin.query(
+            `select count(*)::int n from public.${table} where user_id=$1`,
+            [id],
+          )
+        ).rows[0].n,
+        0,
+      );
+  }
   await admin.end();
 });
 test("real API rejects unsigned/tampered/anonymous requests", async () => {
@@ -507,3 +529,42 @@ test("operation API stale record/workspace conflicts do not consume operation ID
     assert.equal((await status(TA, req.operationId)).body.status, "not-found");
   }
 });
+
+// Execute the exact new hosted operation cases locally, with synthetic signed claims, not GoTrue.
+describe(
+  "Shared hosted-operation cases against local PostgREST",
+  { concurrency: false },
+  () => {
+    operationCases({
+      test: safeTest(test),
+      before: (action) => before(() => sanitized("Local shared setup", action)),
+      db: admin,
+      rpc,
+      revoke: async (u) => {
+        await admin.query("delete from auth.sessions where user_id=$1", [u.id]);
+      },
+      request: (path, options = {}) =>
+        request(
+          path.replace("/rest/v1", ""),
+          options.token,
+          options.method,
+          options.body,
+        ),
+      provision: async () => {
+        const id = randomUUID(),
+          sid = randomUUID();
+        operationAccounts.push(id);
+        await admin.query("insert into auth.users(id) values($1)", [id]);
+        await admin.query(
+          "insert into auth.sessions(id,user_id) values($1,$2)",
+          [sid, id],
+        );
+        await admin.query(
+          "insert into public.dylan_staging_accounts(user_id,enabled) values($1,true)",
+          [id],
+        );
+        return { id, token: jwt(id, sid) };
+      },
+    });
+  },
+);

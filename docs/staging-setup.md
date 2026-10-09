@@ -137,3 +137,30 @@ npm run test:staging
 ```
 
 A successful checkpoint requires **13 passed, zero failed, zero skipped/cancelled**, successful setup/cleanup hooks, and exit status 0. Missing variables currently produce one skipped test and zero passes—even with exit status 0, that means **UNVERIFIED**. Any assertion, TLS/network error, setup error or cleanup error means the checkpoint has not passed. Do not publish raw logs without checking for sensitive information. Share only counts and sanitized errors. Do not proceed to migration or production activation based on a partial pass.
+
+## V1.6 Phase 2A.1 — hosted test preparation
+
+The runner now retains all 13 original hosted checks and adds 11 shared Phase 2A operation checks: **24 hosted tests**, expected zero failed/skipped/cancelled plus successful setup and cleanup. No hosted execution or deployment is authorized by this preparation release.
+
+Before creating any synthetic account, hosted setup requires exactly the six approved migration versions in `supabase_migrations.schema_migrations`. The currently three-migration staging deployment is therefore a blocker. This preflight reads history; it never repairs history, applies migrations, resets schemas, installs jobs or enables real users. Deployment, backup/recovery review and execution require separate approval.
+
+The new cases cover atomic multi-domain batches, full rollback including ordering/snapshots/receipts, workspace/record CAS, batch limits, all ten collection orders, legacy command/restore compatibility, concurrent identical retries and legacy/new races, linked deletion inventory, scoped Undo/replay/foreign denial, actual 30-second server expiry, UUIDv7 admission/status/reuse, forced RLS, denied receipt access, private-helper/maintenance grants, allowlisting/session expiry/revocation and account isolation.
+
+All fixtures use administrator-created, confirmed `example.invalid` accounts. Separate accounts isolate new cases from the original tests and their logout checks. SQL payload reads/fixture writes are restricted to those generated accounts; schema/grant/history inspections read metadata only. A run marker in Auth user metadata helps recover a synthetic account if creation succeeds but its HTTP response is lost. Cleanup attempts every tracked account and object, verifies removal (including cascading domain/receipt/snapshot rows), and reports failure even if other resources were successfully removed. Transport failures, original exceptions, response bodies, assertion actual/expected values and error causes are redacted from hosted test reports. Do not enable debug traces or environment dumps outside the runner.
+
+Only the original three-migration suite's past results remain historical evidence. The prepared new hosted suite has **not run**. Running `node --check scripts/staging-api.test.mjs` parses syntax without executing it. Do not run `npm run test:staging` until approval. After approved deployment/execution, use the same six securely configured variables documented above; no extra frontend configuration is required. Missing variables still yield one skipped test and zero passes, meaning UNVERIFIED even with exit status zero.
+
+Local preparation checks:
+
+```sh
+npm run test:staging-safety
+npm run test:api
+npm test
+npm run build
+```
+
+`test:api` runs the exact 11 new shared API cases against disposable local PostgREST alongside the 14 existing HTTP cases. Its users/JWTs are synthetic fixtures, not hosted Auth-issued identities. This catches fixture/assertion mistakes without pretending to prove hosted Auth or gateway behavior. Allow about 35 seconds for the real Undo expiry check. The eight redaction/cleanup/public-key helper tests use controlled failures and are not authorization evidence.
+
+The expired-id case simulates removal of one seeded old receipt owned by a fresh test account, then proves the old ID cannot execute. It never invokes global maintenance. Actual bounded maintenance/retention is covered locally; hosted cleanup scheduling and a controlled operational disable/recovery drill remain separate deployment tasks. Provider backup recovery, naturally elapsed hosted JWT refresh behavior and full hosted-browser auth workflows remain unverified.
+
+Phase 2A.1 preparation validation: **193 application tests, 44 PostgreSQL tests, 25 local HTTP tests (including the 11 shared cases), and eight redaction/cleanup/public-key tests passed**, with no failures/skips in executed suites. Production build and hosted-runner syntax check passed. The 24-test hosted runner itself was not executed. No migrations or frontend source files changed in this checkpoint.

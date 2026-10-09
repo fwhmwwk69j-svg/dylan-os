@@ -11,7 +11,8 @@
     "format": "prettier --write .",
     "test:db": "./scripts/db-local.sh test",
     "test:staging": "node --test scripts/staging-api.test.mjs",
-    "test:api": "node --test scripts/local-api.test.mjs"
+    "test:api": "node --test scripts/local-api.test.mjs",
+    "test:staging-safety": "node --test scripts/staging-safety.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.3.0",

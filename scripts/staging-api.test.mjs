@@ -1,4 +1,19 @@
-import { test, before, after } from "node:test";
+import {
+  test as nodeTest,
+  before as nodeBefore,
+  after as nodeAfter,
+  describe,
+} from "node:test";
+import {
+  safeTest,
+  sanitized,
+  cleanupSynthetic,
+  assertPublishableKey,
+} from "./staging-safety.mjs";
+import { operationCases } from "./hosted-operation-cases.mjs";
+const test = safeTest(nodeTest);
+const before = (action) => nodeBefore(() => sanitized("Hosted setup", action));
+const after = (action) => nodeAfter(() => sanitized("Hosted cleanup", action));
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
@@ -41,16 +56,25 @@ if (missing.length) {
     throw Error(
       "Only an explicitly approved isolated staging project/DB pair can be tested.",
     );
+  assertPublishableKey(cfg.DYLAN_STAGING_PUBLISHABLE_KEY);
   const db = new pg.Client({
     connectionString: cfg.DYLAN_STAGING_DB_URL,
     ssl: { rejectUnauthorized: true },
+    connectionTimeoutMillis: 30000,
+    query_timeout: 30000,
   });
   if (
     !db.connectionParameters.ssl ||
     db.connectionParameters.ssl.rejectUnauthorized === false
   )
     throw Error("Staging database TLS certificate verification is required.");
+  let transportFailed = false;
+  db.on("error", () => {
+    transportFailed = true;
+  });
+  const runId = randomUUID();
   const accounts = [];
+  const generatedEmails = [];
   const objects = [];
   let a, b;
   async function request(
@@ -78,7 +102,7 @@ if (missing.length) {
     } catch {
       result = null;
     }
-    return { status: response.status, body: result };
+    return { status: response.status, body: result, headers: response.headers };
   }
   const rpc = (name, token, body = {}) =>
     request("/rest/v1/rpc/" + name, { token, method: "POST", body });
@@ -90,11 +114,17 @@ if (missing.length) {
   async function provision() {
     const email = `dylan-synthetic-${randomUUID()}@example.invalid`,
       password = randomUUID() + randomUUID();
+    generatedEmails.push(email);
     const created = await request("/auth/v1/admin/users", {
       key: cfg.DYLAN_STAGING_SECRET_KEY,
       token: cfg.DYLAN_STAGING_SECRET_KEY,
       method: "POST",
-      body: { email, password, email_confirm: true },
+      body: {
+        email,
+        password,
+        email_confirm: true,
+        user_metadata: { dylan_test_run: runId },
+      },
     });
     assert.equal(
       created.status,
@@ -122,6 +152,23 @@ if (missing.length) {
   }
   before(async () => {
     await db.connect();
+    const versions = (
+      await db.query(
+        "select version from supabase_migrations.schema_migrations order by version",
+      )
+    ).rows.map((r) => r.version);
+    assert.deepEqual(
+      versions,
+      [
+        "202610080001",
+        "202610080002",
+        "202610080003",
+        "202610090004",
+        "202610090005",
+        "202610090006",
+      ],
+      "Apply approved six-migration schema before hosted verification",
+    );
     // Explicit allowlisting protects private data, but public sign-up must independently be disabled.
     const settings = await request("/auth/v1/settings");
     assert.equal(settings.status, 200);
@@ -134,45 +181,87 @@ if (missing.length) {
     b = await provision();
   });
   after(async () => {
-    const failures = [];
+    let discoveryFailed = false;
     try {
-      if (objects.length) {
-        try {
-          const removed = await request(
-            "/storage/v1/object/dylan-staging-private",
-            {
-              key: cfg.DYLAN_STAGING_SECRET_KEY,
-              token: cfg.DYLAN_STAGING_SECRET_KEY,
-              method: "DELETE",
-              body: { prefixes: objects },
-            },
-          );
-          if (![200, 204].includes(removed.status))
-            failures.push("storage objects");
-        } catch {
-          failures.push("storage objects");
-        }
-      }
-      for (const id of accounts) {
-        try {
-          const removed = await request("/auth/v1/admin/users/" + id, {
-            key: cfg.DYLAN_STAGING_SECRET_KEY,
-            token: cfg.DYLAN_STAGING_SECRET_KEY,
-            method: "DELETE",
-          });
-          if (![200, 204].includes(removed.status))
-            failures.push("synthetic user " + id);
-        } catch {
-          failures.push("synthetic user " + id);
-        }
-      }
-    } finally {
-      await db.end();
+      const found = await db.query(
+        "select id from auth.users where email=any($1::text[]) and raw_user_meta_data->>'dylan_test_run'=$2",
+        [generatedEmails, runId],
+      );
+      for (const row of found.rows)
+        if (!accounts.includes(row.id)) accounts.push(row.id);
+    } catch {
+      discoveryFailed = true;
     }
+    await cleanupSynthetic({
+      objects,
+      accounts,
+      removeObjects: async (prefixes) => {
+        const r = await request("/storage/v1/object/dylan-staging-private", {
+          key: cfg.DYLAN_STAGING_SECRET_KEY,
+          token: cfg.DYLAN_STAGING_SECRET_KEY,
+          method: "DELETE",
+          body: { prefixes },
+        });
+        assert([200, 204].includes(r.status));
+        assert.equal(
+          (
+            await db.query(
+              "select count(*)::int n from storage.objects where bucket_id='dylan-staging-private' and name=any($1::text[])",
+              [prefixes],
+            )
+          ).rows[0].n,
+          0,
+        );
+      },
+      removeAccount: async (id) => {
+        const r = await request("/auth/v1/admin/users/" + id, {
+          key: cfg.DYLAN_STAGING_SECRET_KEY,
+          token: cfg.DYLAN_STAGING_SECRET_KEY,
+          method: "DELETE",
+        });
+        assert([200, 204].includes(r.status));
+      },
+      verifyAccount: async (id) => {
+        for (const table of [
+          "auth.users",
+          "auth.sessions",
+          "public.dylan_staging_accounts",
+          "public.account_workspaces",
+          "public.workspace_snapshots",
+          "public.workspace_operation_receipts",
+          "public.workspace_deletion_receipts",
+          "public.workspace_preferences",
+          "public.fitness_goals",
+          "public.tasks",
+          "public.courses",
+          "public.school_work",
+          "public.weight_entries",
+          "public.daily_nutrition",
+          "public.workout_entries",
+          "public.habits",
+          "public.important_dates",
+          "public.commitment_series",
+          "public.weekly_reflections",
+        ]) {
+          const column = table === "auth.users" ? "id" : "user_id";
+          assert.equal(
+            (
+              await db.query(
+                `select count(*)::int n from ${table} where ${column}=$1`,
+                [id],
+              )
+            ).rows[0].n,
+            0,
+          );
+        }
+      },
+      close: () => db.end(),
+    });
+    assert.equal(transportFailed, false, "Staging database transport failed");
     assert.equal(
-      failures.length,
-      0,
-      "Cleanup incomplete; manually remove only: " + failures.join(", "),
+      discoveryFailed,
+      false,
+      "Synthetic account discovery incomplete",
     );
   });
   const task = (id) => ({
@@ -397,6 +486,7 @@ if (missing.length) {
   });
   test("hosted quarantine storage denies listing/uploading/downloading via actual Storage API", async () => {
     const path = a.id + "/synthetic-sentinel.json";
+    objects.push(path);
     const seeded = await request(
       "/storage/v1/object/dylan-staging-private/" + path,
       {
@@ -407,7 +497,6 @@ if (missing.length) {
       },
     );
     assert([200, 201].includes(seeded.status));
-    objects.push(path);
     const listing = await request(
       "/storage/v1/object/list/dylan-staging-private",
       { token: a.token, method: "POST", body: { prefix: "", limit: 10 } },
@@ -626,5 +715,22 @@ if (missing.length) {
       body: { refresh_token: b.refreshToken },
     });
     assert([400, 401, 403].includes(refresh.status));
+  });
+  describe("Hosted Phase 2A operations", { concurrency: false }, () => {
+    operationCases({
+      test,
+      before,
+      provision,
+      rpc,
+      request,
+      db,
+      revoke: async (u) => {
+        const r = await request("/auth/v1/logout?scope=global", {
+          token: u.token,
+          method: "POST",
+        });
+        assert([200, 204].includes(r.status));
+      },
+    });
   });
 }
