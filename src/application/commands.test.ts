@@ -120,7 +120,7 @@ describe("complete form command contracts", () => {
   it("upserts nutrition without changing the ID or duplicating the date", () => {
     const state = validateWorkspace(sampleData()),
       old = state.nutrition[0];
-    Object.assign(old, { extra: "keep" });
+    Object.assign(old, { extra: "keep", date: today });
     const f = form({
       date: old.date,
       calories: "2400",

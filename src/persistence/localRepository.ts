@@ -12,7 +12,13 @@ import {
   type WorkspaceSave,
 } from "./repository";
 import { browserStore } from "./browserStore";
+import { LOCAL_CAPABILITIES } from "./contracts";
+import type { WorkspaceIdentity } from "../domain/workspace";
 export class LocalWorkspaceRepository implements WorkspaceRepository {
+  readonly capabilities = LOCAL_CAPABILITIES;
+  get identity(): WorkspaceIdentity {
+    return { ...this.owner };
+  }
   readonly owner = { kind: "local" as const, workspaceId: STORAGE_KEY };
   constructor(
     private store: Store = browserStore,

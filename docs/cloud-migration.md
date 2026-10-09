@@ -71,3 +71,7 @@ Real-data migration in 1.5.3 must be explicit and reversible: verify a downloade
 ## Version 1.5.2 implementation status
 
 Staging backend code now exists in `supabase/migrations`: typed owned domain tables, forced owner-read RLS, composite academic FKs, active-session/administrator-allowlist checks, transactional expected-revision commands and account-scoped snapshot restore. LocalStorage remains the only repository constructed by App. See [staging setup and verification](staging-setup.md) and [the server boundary](../backend/README.md). No hosted deployment or real-data upload has happened. Hosted security is unverified until the separate credentialed runner passes; local PostgreSQL/PostgREST tests are distinct evidence.
+
+## V1.6 Phase 1 checkpoint
+
+The current V1.6 direction is Cloud Integration, superseding the earlier release numbering above. Phase 1 implements local-only contracts and synthetic compatibility fixtures; see [the operation matrix and acceptance scope](v1.6-phase1.md). Authentication, cloud execution, migration and hosted schema changes remain separate approval gates.
