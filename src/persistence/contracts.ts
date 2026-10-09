@@ -54,10 +54,13 @@ export type RecordMutation =
       collection: Collection;
       id: string;
       expectedRecordRevision: number;
+      /** Required by the server for course deletion, including an empty map. */
+      expectedLinkedRevisions?: Record<string, number>;
     };
 export type WorkspaceOperation =
   | RecordMutation
   | { action: "batch"; mutations: RecordMutation[] }
+  | { action: "reorder"; collection: Collection; ids: string[] }
   | { action: "preferences"; preferences: NonNullable<State["preferences"]> }
   | {
       action: "goals";

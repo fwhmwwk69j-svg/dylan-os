@@ -1,5 +1,7 @@
 # Version 1.5.2 staging setup and verification
 
+> **V1.6 Phase 2A deployment hold:** this checkout now contains three additional local-only migrations. Do not run the historical `supabase db push` instructions below against hosted staging until deployment is separately approved. The hosted project remains on the original three migrations. See [Phase 2A](v1.6-phase2a.md) for the new contracts and local verification limits.
+
 The local app remains unchanged and uses localStorage. No real user data has been uploaded, no hosted project has been created here, and production is not activated. The only new package is `pg`, a development dependency for real database tests. SQL migrations and optional staging client are not imported by the frontend bundle.
 
 ## Local repeatable security tests

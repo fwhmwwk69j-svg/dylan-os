@@ -30,4 +30,8 @@ Queryable scalar fields live in typed columns. Habit counts/plan history and pre
 
 The quarantine Storage bucket is private and has a restrictive deny policy for browser roles. No document upload/download functionality is activated. A service administrator can still bypass RLS; privileged credentials must remain exclusively in secure operator/CI environments.
 
-Staging exports currently order relational collections by ID. Version 1.5.3 must implement and verify original array ordering as part of its explicit migration rather than guessing or discarding it. Current local data/order are untouched. Staging request/record size caps and ID length constraints must be included in migration previews and tested against representative exports before accepting real records.
+The original three-migration staging exports order relational collections by ID. The separately approved local-only Phase 2A migrations add internal positions and ordered export reconstruction. Version 1.5.3 must implement and verify original array ordering as part of its explicit migration rather than guessing or discarding it. Current local data/order are untouched. Staging request/record size caps and ID length constraints must be included in migration previews and tested against representative exports before accepting real records.
+
+## V1.6 Phase 2A local implementation
+
+See [atomic operations and deployment restrictions](../docs/v1.6-phase2a.md). Two new authenticated RPCs add account-scoped UUIDv7 receipts, atomic batches, reorder and 30-second scoped deletion Undo. Existing RPC signatures remain compatible. No hosted migrations have been applied and App still uses localStorage.

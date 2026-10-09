@@ -75,3 +75,7 @@ Staging backend code now exists in `supabase/migrations`: typed owned domain tab
 ## V1.6 Phase 1 checkpoint
 
 The current V1.6 direction is Cloud Integration, superseding the earlier release numbering above. Phase 1 implements local-only contracts and synthetic compatibility fixtures; see [the operation matrix and acceptance scope](v1.6-phase1.md). Authentication, cloud execution, migration and hosted schema changes remain separate approval gates.
+
+## V1.6 Phase 2A checkpoint
+
+[Phase 2A](v1.6-phase2a.md) adds locally tested ordering, operation receipts/idempotency, atomic batches and scoped deletion Undo through three additive migrations. Existing local persistence and RPC signatures remain. Hosted deployment and Phase 2B are not authorized; cloud adapter, real-data migration and account activation remain unimplemented.

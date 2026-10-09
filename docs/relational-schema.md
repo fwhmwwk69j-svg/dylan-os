@@ -60,3 +60,7 @@ Before real migration, test all two-user/anonymous read/write/list/export/restor
 ## Version 1.5.2 implemented staging subset
 
 The repeatable SQL implementation lives in `supabase/migrations`. Ten record tables, workspace/preferences/goals/snapshots and an administrator-managed synthetic-account allowlist are implemented. Habit counts/plan history use JSONB and recurrence/completion dates use owned arrays, preserving one source of truth; the proposed separate child history/exception tables are deferred. Queryable scalars are typed columns and unknown record fields remain extensions. AI, billing, integrations, shared calendars and account-deletion jobs remain future design, not deployed tables. See [staging instructions](staging-setup.md) for exact local versus hosted verification boundaries.
+
+## V1.6 Phase 2A local-only additions
+
+Three additive migrations add internal positions on the ten record tables and two default-deny, forced-RLS account-owned tables: `workspace_operation_receipts` and `workspace_deletion_receipts`. Browser table access is revoked; authenticated ownership-checked RPCs are the only client paths. See [the exact contracts](v1.6-phase2a.md). These changes have not been deployed to hosted Supabase; the original fifteen hosted tables remain the deployed subset.
